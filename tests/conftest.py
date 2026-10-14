@@ -9,7 +9,7 @@ import respx
 from nvisionx import AsyncNx, Nx
 from nvisionx._base_client import BaseClient
 
-BASE_URL = "https://api.test.nx.dev"
+BASE_URL = "https://api.test.example"
 API_KEY = "nx_test_abc123_secret"
 
 

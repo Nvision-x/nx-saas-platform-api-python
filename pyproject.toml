@@ -32,8 +32,7 @@ dependencies = [
 ]
 
 [project.urls]
-Homepage = "https://nx.dev"
-Documentation = "https://nx.dev/docs"
+Homepage = "https://platform.us.nvisionx.ai"
 Repository = "https://github.com/Nvision-x/nx-saas-platform-api-python"
 Issues = "https://github.com/Nvision-x/nx-saas-platform-api-python/issues"
 

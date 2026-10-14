@@ -1,5 +1,5 @@
 from nvisionx import types
-from nvisionx._base_client import DEFAULT_BASE_URL, EU_BASE_URL
+from nvisionx._base_client import DEFAULT_BASE_URL
 from nvisionx._client import AsyncNx, Nx
 from nvisionx._errors import (
     APIConnectionError,
@@ -24,7 +24,6 @@ from nvisionx._version import __version__
 
 __all__ = [
     "DEFAULT_BASE_URL",
-    "EU_BASE_URL",
     "APIConnectionError",
     "APIStatusError",
     "APITimeoutError",

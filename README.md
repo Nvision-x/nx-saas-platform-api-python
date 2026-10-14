@@ -2,7 +2,7 @@
 
 [![CI](https://github.com/Nvision-x/nx-saas-platform-api-python/actions/workflows/ci.yml/badge.svg)](https://github.com/Nvision-x/nx-saas-platform-api-python/actions/workflows/ci.yml)
 
-The official Python client for the [Nx Platform API](https://nx.dev/docs). Nx turns the documents in your data
+The official Python client for the [NVISIONx Nx Platform](https://platform.us.nvisionx.ai) API. Nx turns the documents in your data
 estate into **business records** (record type, owner, sensitivity, retention), makes them searchable, and exposes them
 to agents.
 
@@ -44,11 +44,10 @@ for result in results.results:
 ## Configuration
 
 ```python
-from nvisionx import EU_BASE_URL, Nx
+from nvisionx import Nx
 
 nx = Nx(
     api_key="nx_live_…",
-    base_url=EU_BASE_URL,
     timeout=30.0,
     max_retries=3,
 )
@@ -57,7 +56,7 @@ nx = Nx(
 | Option | Environment variable | Default |
 | --- | --- | --- |
 | `api_key` | `NX_API_KEY` | required |
-| `base_url` | `NX_BASE_URL` | `https://api.nx.dev` (`EU_BASE_URL` is `https://api.eu.nx.dev`) |
+| `base_url` | `NX_BASE_URL` | `https://platform.us.nvisionx.ai` |
 | `timeout` | | 60 s; 300 s for agent runs and chat answers; no write timeout for uploads |
 | `max_retries` | | 2 |
 | `default_headers` | | |
@@ -154,7 +153,7 @@ from mcp import ClientSession
 from mcp.client.streamable_http import streamablehttp_client
 
 async with streamablehttp_client(
-    "https://mcp.nx.dev/mcp", headers={"Authorization": f"Bearer {api_key}"}
+    "https://platform.us.nvisionx.ai/mcp", headers={"Authorization": f"Bearer {api_key}"}
 ) as (read, write, _):
     async with ClientSession(read, write) as session:
         await session.initialize()

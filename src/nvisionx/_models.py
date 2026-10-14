@@ -193,8 +193,10 @@ JobStatus = TypeAliasType("JobStatus", Annotated[Literal["queued", "running", "p
 
 
 class Oauth(NxModel):
-    resource_metadata_url: Annotated[str, Field(examples=["https://mcp.nx.dev/.well-known/oauth-protected-resource"])]
-    authorization_server: Annotated[str, Field(examples=["https://auth.nx.dev"])]
+    resource_metadata_url: Annotated[
+        str, Field(examples=["https://platform.us.nvisionx.ai/.well-known/oauth-protected-resource"])
+    ]
+    authorization_server: Annotated[str, Field(examples=["https://platform.us.nvisionx.ai"])]
 
 
 McpToolName = TypeAliasType(
@@ -801,7 +803,7 @@ class ChatStreamEvent(NxModel):
 
 
 class McpServer(NxModel):
-    url: Annotated[str, Field(examples=["https://mcp.nx.dev/mcp"])]
+    url: Annotated[str, Field(examples=["https://platform.us.nvisionx.ai/mcp"])]
     """
     The same URL for every workspace (the deployment's MCP resource). The credential selects the workspace.
     """

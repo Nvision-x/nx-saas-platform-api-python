@@ -35,10 +35,10 @@ def test_requires_api_key() -> None:
 
 def test_reads_environment(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setenv("NX_API_KEY", "nx_live_env")
-    monkeypatch.setenv("NX_BASE_URL", "https://api.eu.nx.dev/")
+    monkeypatch.setenv("NX_BASE_URL", "https://nx.internal.example/")
     nx = Nx()
     assert nx.api_key == "nx_live_env"
-    assert str(nx.base_url) == "https://api.eu.nx.dev/"
+    assert str(nx.base_url) == "https://nx.internal.example/"
 
 
 def test_default_base_url() -> None:

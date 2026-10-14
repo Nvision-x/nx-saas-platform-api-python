@@ -14,8 +14,7 @@ from pydantic import BaseModel
 from nvisionx._errors import NxError, parse_retry_after
 from nvisionx._version import __version__
 
-DEFAULT_BASE_URL = "https://api.nx.dev"
-EU_BASE_URL = "https://api.eu.nx.dev"
+DEFAULT_BASE_URL = "https://platform.us.nvisionx.ai"
 DEFAULT_TIMEOUT = httpx.Timeout(60.0, connect=10.0)
 DEFAULT_MAX_RETRIES = 2
 AGENT_TIMEOUT = httpx.Timeout(300.0, connect=10.0)

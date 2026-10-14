@@ -3,14 +3,9 @@ info:
   title: Nx Platform API
   version: 2026-10-01
   summary: Business context, as an API.
-  contact:
-    name: NVISIONx Developer Platform
-    url: https://nx.dev/docs
 servers:
-- url: https://api.nx.dev
+- url: https://platform.us.nvisionx.ai
   description: Production
-- url: https://api.eu.nx.dev
-  description: Production · EU residency
 security:
 - bearerAuth: []
 paths:
@@ -1930,7 +1925,7 @@ components:
           type: string
           format: uri
           examples:
-          - https://mcp.nx.dev/mcp
+          - https://platform.us.nvisionx.ai/mcp
           description: The same URL for every workspace (the deployment's MCP resource). The credential selects the workspace.
         status:
           type: string
@@ -1948,12 +1943,12 @@ components:
               type: string
               format: uri
               examples:
-              - https://mcp.nx.dev/.well-known/oauth-protected-resource
+              - https://platform.us.nvisionx.ai/.well-known/oauth-protected-resource
             authorization_server:
               type: string
               format: uri
               examples:
-              - https://auth.nx.dev
+              - https://platform.us.nvisionx.ai
         tools:
           type: array
           items:

@@ -154,7 +154,7 @@ def test_explicit_client_timeout_wins(api: respx.MockRouter) -> None:
     route = api.post("/v1/agents/runs").respond(
         json={"run_id": "run_1", "status": "completed", "tool_calls": 0, "cost_usd": 0}
     )
-    with Nx(api_key="k", base_url="https://api.test.nx.dev", timeout=12.0) as nx:
+    with Nx(api_key="k", base_url="https://api.test.example", timeout=12.0) as nx:
         nx.agents.run("x")
     assert route.calls.last.request.extensions["timeout"]["read"] == 12.0
 
