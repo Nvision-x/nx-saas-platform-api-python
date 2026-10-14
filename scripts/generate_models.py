@@ -132,6 +132,8 @@ def write_types(models: str) -> None:
     lines += [f'    "{name}",' for name in [*exported, "SearchFilters"]]
     lines += ["]", ""]
     TYPES.write_text("\n".join(lines))
+    subprocess.run([sys.executable, "-m", "ruff", "check", "-q", "--fix", "--select", "I", str(TYPES)], check=True)
+    subprocess.run([sys.executable, "-m", "ruff", "format", "-q", str(TYPES)], check=True)
 
 
 def main() -> int:
