@@ -1,0 +1,2813 @@
+openapi: 3.1.0
+info:
+  title: Nx Platform API
+  version: 2026-10-01
+  summary: Business context, as an API.
+  contact:
+    name: NVISIONx Developer Platform
+    url: https://nx.dev/docs
+servers:
+- url: https://api.nx.dev
+  description: Production
+- url: https://api.eu.nx.dev
+  description: Production · EU residency
+security:
+- bearerAuth: []
+paths:
+  /v1/sources/authorizations:
+    parameters:
+    - $ref: '#/components/parameters/WorkspaceHeader'
+    post:
+      tags:
+      - Data sources
+      operationId: createSourceAuthorization
+      summary: Start authorizing a data source
+      description: "Step 1 of connecting a source.\n\n- **SharePoint / OneDrive, `mode: tenant`** (default) returns an admin-consent\n\
+        \  `authorize_url`. A Microsoft 365 administrator grants Nx read-only, app-only\n  access to the whole tenant; Microsoft\
+        \ redirects to `redirect_uri` with `tenant`,\n  `admin_consent` and `state`, which you pass to the verify call.\n\
+        - **`mode: personal`** (SharePoint / OneDrive, Google Drive, Box) returns a\n  delegated `authorize_url` for the signed-in\
+        \ user's own drive; the provider\n  redirects with a `code`.\n- **IAM providers** (Amazon S3) return `external_id`.\
+        \ Create an IAM role Nx can\n  assume with that external ID, granting `s3:GetObject` and `s3:ListBucket` only,\n \
+        \ then pass the bucket and role ARN to the verify call.\n"
+      x-required-scope: sources:write
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/SourceAuthorizationCreate'
+      responses:
+        '201':
+          description: Pending authorization.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SourceAuthorization'
+        '400':
+          $ref: '#/components/responses/InvalidRequest'
+  /v1/sources/authorizations/{authorization_id}:
+    parameters:
+    - $ref: '#/components/parameters/WorkspaceHeader'
+    - name: authorization_id
+      in: path
+      required: true
+      schema:
+        type: string
+    get:
+      tags:
+      - Data sources
+      operationId: getSourceAuthorization
+      summary: Get an authorization
+      x-required-scope: sources:read
+      responses:
+        '200':
+          description: Authorization.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SourceAuthorization'
+        '404':
+          $ref: '#/components/responses/NotFound'
+  /v1/sources/authorizations/{authorization_id}/verify:
+    parameters:
+    - $ref: '#/components/parameters/WorkspaceHeader'
+    - name: authorization_id
+      in: path
+      required: true
+      schema:
+        type: string
+    post:
+      tags:
+      - Data sources
+      operationId: verifySourceAuthorization
+      summary: Complete and verify an authorization
+      description: Verifies read-only access and records the account (tenant, bucket or domain). Connectors are read-only
+        today. Browse and select content on the source once it is created.
+      x-required-scope: sources:write
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/SourceAuthorizationVerify'
+      responses:
+        '200':
+          description: Verified authorization.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SourceAuthorization'
+        '400':
+          $ref: '#/components/responses/InvalidRequest'
+        '422':
+          description: The provider rejected the credentials or the role cannot be assumed.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+  /v1/sources:
+    parameters:
+    - $ref: '#/components/parameters/WorkspaceHeader'
+    get:
+      tags:
+      - Data sources
+      operationId: listSources
+      summary: List data sources
+      x-required-scope: sources:read
+      responses:
+        '200':
+          description: Connected sources.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SourceList'
+    post:
+      tags:
+      - Data sources
+      operationId: createSource
+      summary: Connect a data source
+      description: 'Step 2 of connecting a source. Nx discovers the data estate (sites, libraries,
+
+        drives) and inventories its metadata; no documents are ingested until you choose
+
+        content with `updateSourceSelection`. The source moves through `phase`
+
+        `discovering` → `inventorying` → `awaiting_selection`. Ingestion is metered as
+
+        documents ingested and GB processed.
+
+        '
+      x-required-scope: sources:write
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/SourceCreate'
+      responses:
+        '201':
+          description: Source connected; discovery running.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Source'
+        '400':
+          $ref: '#/components/responses/InvalidRequest'
+        '402':
+          $ref: '#/components/responses/BudgetExceeded'
+        '404':
+          $ref: '#/components/responses/NotFound'
+  /v1/sources/{source_id}:
+    parameters:
+    - $ref: '#/components/parameters/WorkspaceHeader'
+    - $ref: '#/components/parameters/SourceId'
+    get:
+      tags:
+      - Data sources
+      operationId: getSource
+      summary: Get a data source
+      x-required-scope: sources:read
+      responses:
+        '200':
+          description: Source.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Source'
+        '404':
+          $ref: '#/components/responses/NotFound'
+    patch:
+      tags:
+      - Data sources
+      operationId: updateSource
+      summary: Rename a source or change its schedule
+      x-required-scope: sources:write
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/SourceUpdate'
+      responses:
+        '200':
+          description: Updated source.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Source'
+        '404':
+          $ref: '#/components/responses/NotFound'
+    delete:
+      tags:
+      - Data sources
+      operationId: deleteSource
+      summary: Disconnect a data source
+      description: Stops syncing and revokes Nx's access. The source's documents are removed from the workspace.
+      x-required-scope: sources:write
+      responses:
+        '200':
+          description: Disconnected.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Deleted'
+        '404':
+          $ref: '#/components/responses/NotFound'
+  /v1/sources/{source_id}/sync:
+    parameters:
+    - $ref: '#/components/parameters/WorkspaceHeader'
+    - $ref: '#/components/parameters/SourceId'
+    post:
+      tags:
+      - Data sources
+      operationId: syncSource
+      summary: Sync now
+      x-required-scope: sources:write
+      responses:
+        '202':
+          description: Sync started.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Source'
+        '402':
+          $ref: '#/components/responses/BudgetExceeded'
+        '404':
+          $ref: '#/components/responses/NotFound'
+  /v1/sources/{source_id}/estate:
+    parameters:
+    - $ref: '#/components/parameters/WorkspaceHeader'
+    - $ref: '#/components/parameters/SourceId'
+    get:
+      tags:
+      - Data sources
+      operationId: getSourceEstate
+      summary: Summarize the data estate
+      description: Totals and breakdowns of everything Nx can read in the source — selected or not — from the metadata inventory.
+        Partial while `inventory.status` is `running`.
+      x-required-scope: sources:read
+      responses:
+        '200':
+          description: Estate summary.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SourceEstate'
+        '404':
+          $ref: '#/components/responses/NotFound'
+  /v1/sources/{source_id}/nodes:
+    parameters:
+    - $ref: '#/components/parameters/WorkspaceHeader'
+    - $ref: '#/components/parameters/SourceId'
+    get:
+      tags:
+      - Data sources
+      operationId: listSourceNodes
+      summary: Browse a source
+      description: 'Children of `parent` in the source''s tree, for interactive browsing. Omit `parent`
+
+        for the top level (for Microsoft 365: `SharePoint sites` and `OneDrive`). Then
+
+        sites → libraries → folders. Each node carries its recursive file count, size and
+
+        its state in the current selection. Pass `q` to search names under `parent`.
+
+        '
+      x-required-scope: sources:read
+      parameters:
+      - name: parent
+        in: query
+        description: A node `ref`. Omit for the top level.
+        schema:
+          type: string
+      - name: q
+        in: query
+        description: Name search under `parent`.
+        schema:
+          type: string
+      - name: files
+        in: query
+        description: Include files as well as containers and folders.
+        schema:
+          type: boolean
+          default: false
+      - $ref: '#/components/parameters/Limit'
+      - $ref: '#/components/parameters/Cursor'
+      responses:
+        '200':
+          description: Child nodes.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SourceNodeList'
+        '404':
+          $ref: '#/components/responses/NotFound'
+  /v1/sources/{source_id}/selection:
+    parameters:
+    - $ref: '#/components/parameters/WorkspaceHeader'
+    - $ref: '#/components/parameters/SourceId'
+    get:
+      tags:
+      - Data sources
+      operationId: getSourceSelection
+      summary: Get the selected content
+      x-required-scope: sources:read
+      responses:
+        '200':
+          description: Selection.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SourceSelection'
+        '404':
+          $ref: '#/components/responses/NotFound'
+    put:
+      tags:
+      - Data sources
+      operationId: updateSourceSelection
+      summary: Choose what to ingest
+      description: 'Replace the selection. `mode: all` ingests everything Nx can read; `mode: custom`
+
+        ingests the nodes in `include` minus those in `exclude` (the nearest rule to a file
+
+        wins). Newly included documents are ingested and newly excluded ones are removed
+
+        from the workspace, without re-reading the source.
+
+        '
+      x-required-scope: sources:write
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/SourceSelectionUpdate'
+            example:
+              mode: custom
+              include:
+              - drive:b!x1
+              - item:b!x2:01ABC
+              exclude:
+              - item:b!x2:01DEF
+              include_new_sites: false
+              include_onedrive: false
+      responses:
+        '200':
+          description: Saved selection.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SourceSelection'
+        '400':
+          $ref: '#/components/responses/InvalidRequest'
+        '402':
+          $ref: '#/components/responses/BudgetExceeded'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '422':
+          $ref: '#/components/responses/Unprocessable'
+  /v1/sources/{source_id}/selection/preview:
+    parameters:
+    - $ref: '#/components/parameters/WorkspaceHeader'
+    - $ref: '#/components/parameters/SourceId'
+    post:
+      tags:
+      - Data sources
+      operationId: previewSourceSelection
+      summary: Preview a selection
+      description: Files and bytes a selection would ingest, without saving it.
+      x-required-scope: sources:read
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/SourceSelectionUpdate'
+      responses:
+        '200':
+          description: Preview.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SelectionPreview'
+        '400':
+          $ref: '#/components/responses/InvalidRequest'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '422':
+          $ref: '#/components/responses/Unprocessable'
+  /v1/sources/{source_id}/runs:
+    parameters:
+    - $ref: '#/components/parameters/WorkspaceHeader'
+    - $ref: '#/components/parameters/SourceId'
+    get:
+      tags:
+      - Data sources
+      operationId: listSourceRuns
+      summary: List sync runs
+      description: Discovery, inventory and sync runs, newest first.
+      x-required-scope: sources:read
+      parameters:
+      - $ref: '#/components/parameters/Limit'
+      - $ref: '#/components/parameters/Cursor'
+      responses:
+        '200':
+          description: Runs.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SourceRunList'
+        '404':
+          $ref: '#/components/responses/NotFound'
+  /v1/sources/{source_id}/app-grants:
+    parameters:
+    - $ref: '#/components/parameters/WorkspaceHeader'
+    - $ref: '#/components/parameters/SourceId'
+    get:
+      tags:
+      - Data sources
+      operationId: listSourceAppGrants
+      summary: List sync capacity
+      description: 'Microsoft 365 throttles each application per tenant. Large tenants consent to more
+
+        than one Nx application; Nx spreads drives across them. `recommended` is the number
+
+        of applications Nx suggests for this estate. Tenant-mode Microsoft 365 sources only.
+
+        '
+      x-required-scope: sources:read
+      responses:
+        '200':
+          description: App grants.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AppGrantList'
+        '404':
+          $ref: '#/components/responses/NotFound'
+    post:
+      tags:
+      - Data sources
+      operationId: createSourceAppGrant
+      summary: Add sync capacity
+      description: Returns a pending grant whose `consent_url` a tenant administrator opens to consent to the next Nx application.
+        Consent completes through `verifySourceAuthorization`-style redirect parameters on `verifySourceAppGrant`.
+      x-required-scope: sources:write
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required:
+              - redirect_uri
+              properties:
+                redirect_uri:
+                  type: string
+                  format: uri
+      responses:
+        '201':
+          description: Pending grant.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AppGrant'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '422':
+          description: The source is not a tenant-mode Microsoft 365 source, or every Nx application is already granted.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+  /v1/sources/{source_id}/app-grants/{grant_id}/verify:
+    parameters:
+    - $ref: '#/components/parameters/WorkspaceHeader'
+    - $ref: '#/components/parameters/SourceId'
+    - name: grant_id
+      in: path
+      required: true
+      schema:
+        type: string
+    post:
+      tags:
+      - Data sources
+      operationId: verifySourceAppGrant
+      summary: Complete added capacity
+      x-required-scope: sources:write
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/SourceAuthorizationVerify'
+      responses:
+        '200':
+          description: Consented grant.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AppGrant'
+        '400':
+          $ref: '#/components/responses/InvalidRequest'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '422':
+          description: Consent was declined or granted for a different tenant.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+  /v1/documents:
+    parameters:
+    - $ref: '#/components/parameters/WorkspaceHeader'
+    post:
+      tags:
+      - Ingest
+      operationId: ingestDocuments
+      summary: Ingest documents
+      description: 'Upload files or a URL into the workspace. Each document is classified as a
+
+        business record — type, owner, sensitivity, retention — before it becomes
+
+        searchable. Accepts PDF, DOCX, XLSX, MSG, EML, TXT and images, up to 2 GB each.
+
+        '
+      x-required-scope: ingest:write
+      x-meter: docs
+      parameters:
+      - $ref: '#/components/parameters/IdempotencyKey'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/IngestUrlRequest'
+            example:
+              url: https://files.acmehealth.io/Northwind_MSA_2024.pdf
+              metadata:
+                department: legal
+          multipart/form-data:
+            schema:
+              $ref: '#/components/schemas/IngestUploadRequest'
+      responses:
+        '202':
+          description: Ingestion job queued.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Job'
+        '400':
+          $ref: '#/components/responses/InvalidRequest'
+        '402':
+          $ref: '#/components/responses/BudgetExceeded'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '413':
+          description: A file exceeds 2 GB.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+  /v1/jobs:
+    parameters:
+    - $ref: '#/components/parameters/WorkspaceHeader'
+    get:
+      tags:
+      - Ingest
+      operationId: listJobs
+      summary: List ingestion jobs
+      x-required-scope: ingest:read
+      parameters:
+      - name: status
+        in: query
+        schema:
+          $ref: '#/components/schemas/JobStatus'
+      - name: source_id
+        in: query
+        schema:
+          type: string
+      - $ref: '#/components/parameters/Limit'
+      - $ref: '#/components/parameters/Cursor'
+      responses:
+        '200':
+          description: Jobs, newest first.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/JobList'
+  /v1/jobs/{job_id}:
+    parameters:
+    - $ref: '#/components/parameters/WorkspaceHeader'
+    - name: job_id
+      in: path
+      required: true
+      schema:
+        type: string
+        examples:
+        - job_7Hq2xK
+    get:
+      tags:
+      - Ingest
+      operationId: getJob
+      summary: Get job status
+      description: Poll an ingestion job. Completed jobs return the record types assigned to each document in `classified`.
+      x-required-scope: ingest:read
+      responses:
+        '200':
+          description: Job.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Job'
+        '404':
+          $ref: '#/components/responses/NotFound'
+  /v1/search:
+    parameters:
+    - $ref: '#/components/parameters/WorkspaceHeader'
+    post:
+      tags:
+      - Search
+      operationId: search
+      summary: Search records
+      description: Hybrid keyword + semantic search across the workspace, limited to the sources your token can read. Results
+        carry business context, not just text matches.
+      x-required-scope: search:read
+      x-meter: search
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/SearchRequest'
+            example:
+              query: indemnification cap in vendor contracts
+              mode: hybrid
+              limit: 5
+      responses:
+        '200':
+          description: Ranked results.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SearchResponse'
+        '400':
+          $ref: '#/components/responses/InvalidRequest'
+        '401':
+          $ref: '#/components/responses/Unauthenticated'
+        '402':
+          $ref: '#/components/responses/BudgetExceeded'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '429':
+          $ref: '#/components/responses/RateLimited'
+  /v1/mcp:
+    parameters:
+    - $ref: '#/components/parameters/WorkspaceHeader'
+    get:
+      tags:
+      - Agents
+      operationId: getMcpServer
+      summary: Get the workspace MCP server
+      description: One hosted MCP server per workspace. A tool is listed to a client only if the calling token holds the tool's
+        scope and the tool is enabled here.
+      x-required-scope: agent:read
+      responses:
+        '200':
+          description: Server configuration.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/McpServer'
+  /v1/mcp/tools/{tool_name}:
+    parameters:
+    - $ref: '#/components/parameters/WorkspaceHeader'
+    - name: tool_name
+      in: path
+      required: true
+      schema:
+        $ref: '#/components/schemas/McpToolName'
+    patch:
+      tags:
+      - Agents
+      operationId: updateMcpTool
+      summary: Enable or disable a tool
+      x-required-scope: agent:write
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required:
+              - enabled
+              properties:
+                enabled:
+                  type: boolean
+      responses:
+        '200':
+          description: Updated tool.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/McpTool'
+        '404':
+          $ref: '#/components/responses/NotFound'
+  /v1/agents/sessions:
+    parameters:
+    - $ref: '#/components/parameters/WorkspaceHeader'
+    get:
+      tags:
+      - Agents
+      operationId: listAgentSessions
+      summary: List recent agent sessions
+      x-required-scope: agent:read
+      parameters:
+      - $ref: '#/components/parameters/Limit'
+      - $ref: '#/components/parameters/Cursor'
+      responses:
+        '200':
+          description: Sessions, newest first.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AgentSessionList'
+  /v1/agents/runs:
+    parameters:
+    - $ref: '#/components/parameters/WorkspaceHeader'
+    post:
+      tags:
+      - Agents
+      operationId: runAgent
+      summary: Run an agent
+      description: Run a hosted agent that plans tool calls over your records and returns a cited answer. Billed per tool
+        call.
+      x-required-scope: agent:write
+      x-meter: agent
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/AgentRunRequest'
+            example:
+              instructions: Which vendor contracts cap indemnity below $2M?
+              tools:
+              - search_records
+              - get_record
+              max_tool_calls: 10
+      responses:
+        '200':
+          description: Completed run.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AgentRun'
+        '402':
+          $ref: '#/components/responses/BudgetExceeded'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+  /v1/chat/conversations:
+    parameters:
+    - $ref: '#/components/parameters/WorkspaceHeader'
+    get:
+      tags:
+      - Chat
+      operationId: listChatConversations
+      summary: List conversations
+      description: The caller's conversations in the workspace, most recently updated first. A conversation belongs to the
+        user or token that started it.
+      x-required-scope: agent:read
+      parameters:
+      - $ref: '#/components/parameters/Limit'
+      - $ref: '#/components/parameters/Cursor'
+      responses:
+        '200':
+          description: Conversations.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ChatConversationList'
+    post:
+      tags:
+      - Chat
+      operationId: createChatConversation
+      summary: Start a conversation
+      description: Creates an empty conversation. Sending its first message titles it unless a title is given.
+      x-required-scope: agent:write
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ChatConversationCreate'
+      responses:
+        '201':
+          description: Conversation.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ChatConversation'
+        '400':
+          $ref: '#/components/responses/InvalidRequest'
+  /v1/chat/conversations/{conversation_id}:
+    parameters:
+    - $ref: '#/components/parameters/WorkspaceHeader'
+    - name: conversation_id
+      in: path
+      required: true
+      schema:
+        type: string
+        examples:
+        - conv_8Kd2
+    get:
+      tags:
+      - Chat
+      operationId: getChatConversation
+      summary: Get a conversation with its messages
+      x-required-scope: agent:read
+      responses:
+        '200':
+          description: Conversation and messages, oldest first.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ChatConversationDetail'
+        '404':
+          $ref: '#/components/responses/NotFound'
+    patch:
+      tags:
+      - Chat
+      operationId: updateChatConversation
+      summary: Rename a conversation or change its sources
+      description: '`sources` applies to the messages sent after the change.'
+      x-required-scope: agent:write
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ChatConversationUpdate'
+      responses:
+        '200':
+          description: Conversation.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ChatConversation'
+        '400':
+          $ref: '#/components/responses/InvalidRequest'
+        '404':
+          $ref: '#/components/responses/NotFound'
+    delete:
+      tags:
+      - Chat
+      operationId: deleteChatConversation
+      summary: Delete a conversation
+      x-required-scope: agent:write
+      responses:
+        '200':
+          description: Deleted.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Deleted'
+        '404':
+          $ref: '#/components/responses/NotFound'
+  /v1/chat/conversations/{conversation_id}/messages:
+    parameters:
+    - $ref: '#/components/parameters/WorkspaceHeader'
+    - name: conversation_id
+      in: path
+      required: true
+      schema:
+        type: string
+    post:
+      tags:
+      - Chat
+      operationId: sendChatMessage
+      summary: Ask a question
+      description: 'Adds the question to the conversation and answers it with a hosted agent that searches
+
+        the conversation''s sources (all the credential may read when it names none). The answer
+
+        cites records with `[n]` markers that match `citations[].marker`. Billed per tool call
+
+        like agent runs.
+
+
+        With `Accept: text/event-stream` the answer streams as server-sent events, each a JSON
+
+        `ChatStreamEvent` in `data:`: `status` and `step` events while the agent works, `delta`
+
+        events with answer text, then one `complete` event carrying the stored assistant
+
+        message (or one `error` event). Otherwise the response is the assistant message as JSON.
+
+        '
+      x-required-scope: agent:write
+      x-meter: agent
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ChatMessageCreate'
+            example:
+              content: Which vendor contracts cap indemnity below $2M?
+      responses:
+        '200':
+          description: The assistant's answer, or a stream of events ending with it.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ChatMessage'
+            text/event-stream:
+              schema:
+                $ref: '#/components/schemas/ChatStreamEvent'
+        '400':
+          $ref: '#/components/responses/InvalidRequest'
+        '402':
+          $ref: '#/components/responses/BudgetExceeded'
+        '404':
+          $ref: '#/components/responses/NotFound'
+  /v1/billing/usage:
+    parameters:
+    - $ref: '#/components/parameters/WorkspaceHeader'
+    get:
+      tags:
+      - Billing
+      operationId: getUsage
+      summary: Get usage for a billing period
+      x-required-scope: billing:read
+      parameters:
+      - name: period
+        in: query
+        description: 'YYYY-MM. Default: current period.'
+        schema:
+          type: string
+          pattern: ^\d{4}-\d{2}$
+      responses:
+        '200':
+          description: Metered usage.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Usage'
+  /v1/budgets:
+    parameters:
+    - $ref: '#/components/parameters/WorkspaceHeader'
+    get:
+      tags:
+      - Billing
+      operationId: listBudgets
+      summary: List budgets
+      x-required-scope: billing:read
+      responses:
+        '200':
+          description: Budgets with current spend.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/BudgetList'
+    post:
+      tags:
+      - Billing
+      operationId: createBudget
+      summary: Create a budget
+      description: '**Soft** budgets email alerts at thresholds; traffic keeps flowing. **Hard** budgets return `402 budget_exceeded`
+        for calls in scope at the limit; in-flight ingestion jobs pause and resume when the limit is raised.'
+      x-required-scope: billing:write
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/BudgetCreate'
+      responses:
+        '201':
+          description: Budget created.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Budget'
+        '400':
+          $ref: '#/components/responses/InvalidRequest'
+  /v1/budgets/{budget_id}:
+    parameters:
+    - $ref: '#/components/parameters/WorkspaceHeader'
+    - name: budget_id
+      in: path
+      required: true
+      schema:
+        type: string
+    patch:
+      tags:
+      - Billing
+      operationId: updateBudget
+      summary: Edit a budget
+      description: Takes effect immediately. Raising a hard limit above spend resumes blocked calls.
+      x-required-scope: billing:write
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/BudgetUpdate'
+      responses:
+        '200':
+          description: Updated budget.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Budget'
+        '400':
+          $ref: '#/components/responses/InvalidRequest'
+        '404':
+          $ref: '#/components/responses/NotFound'
+    delete:
+      tags:
+      - Billing
+      operationId: deleteBudget
+      summary: Delete a budget
+      x-required-scope: billing:write
+      responses:
+        '200':
+          description: Deleted.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Deleted'
+        '404':
+          $ref: '#/components/responses/NotFound'
+components:
+  parameters:
+    Cursor:
+      name: cursor
+      in: query
+      description: Pagination cursor from a previous response.
+      x-go-name: CursorParam
+      schema:
+        type: string
+    IdempotencyKey:
+      name: Idempotency-Key
+      in: header
+      description: Retries with the same key within 24 h return the original response.
+      schema:
+        type: string
+        maxLength: 255
+    Limit:
+      name: limit
+      in: query
+      description: 1–100. Default 50.
+      schema:
+        type: integer
+        minimum: 1
+        maximum: 100
+        default: 50
+    SourceId:
+      name: source_id
+      in: path
+      required: true
+      schema:
+        type: string
+    WorkspaceHeader:
+      name: Nx-Workspace
+      in: header
+      required: false
+      description: Required with session auth on workspace-scoped resources. Ignored with bearer auth (the token's workspace
+        applies).
+      schema:
+        type: string
+        examples:
+        - ws_acme
+  responses:
+    BudgetExceeded:
+      description: 'The call cannot be paid for: `budget_exceeded` (the token''s spend cap is exhausted), `spend_limit_reached`
+        (the organization''s daily spend limit is reached) or `insufficient_balance` (free credit and balance are used up).
+        The call did not run and is not billed.'
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/Error'
+          examples:
+            budget_exceeded:
+              value:
+                error:
+                  type: budget_exceeded
+                  message: Hard budget reached.
+                  budget: staging-search cap
+                  limit_usd: 50
+                  spent_usd: 50
+                  resolve: Raise the limit in Billing → Budgets.
+            spend_limit_reached:
+              value:
+                error:
+                  type: spend_limit_reached
+                  message: Daily spend limit reached.
+                  limit_usd: 100
+                  spent_usd: 100.42
+                  resolve: Request a limit increase in Billing → Limits.
+            insufficient_balance:
+              value:
+                error:
+                  type: insufficient_balance
+                  message: The organization balance is used up.
+                  balance_usd: -0.37
+                  resolve: Add a payment method or top up in Billing → Balance.
+    Forbidden:
+      description: The token lacks the scope or source grant, the user lacks the permission (workspace or organization), or
+        the change would grant more than the caller holds (escalation guard).
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/Error'
+          example:
+            error:
+              type: insufficient_scope
+              message: This token cannot read source src_1.
+              required_scope: search:read
+    InvalidRequest:
+      description: The request is malformed or a field is invalid. `param` names the field.
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/Error'
+          example:
+            error:
+              type: invalid_request
+              message: Name the token.
+              param: name
+    NotFound:
+      description: The resource does not exist in this workspace.
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/Error'
+          example:
+            error:
+              type: not_found
+              message: No source src_9 in ws_acme.
+    RateLimited:
+      description: Too many requests. Retry after `Retry-After` seconds.
+      headers:
+        Retry-After:
+          schema:
+            type: integer
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/Error'
+    Unauthenticated:
+      description: Missing, invalid, expired or revoked credentials.
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/Error'
+          example:
+            error:
+              type: unauthenticated
+              message: The token nx_live_4f9c… was revoked.
+    Unprocessable:
+      description: The request is well formed but cannot be processed in the current state.
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/Error'
+          example:
+            error:
+              type: unprocessable
+              message: No organization uses SAML for acme-health.com.
+  schemas:
+    AgentRun:
+      type: object
+      required:
+      - run_id
+      - status
+      - tool_calls
+      - cost_usd
+      properties:
+        run_id:
+          type: string
+        status:
+          type: string
+          enum:
+          - completed
+          - failed
+          - stopped
+        tool_calls:
+          type: integer
+        cost_usd:
+          type: number
+        answer:
+          type: string
+        citations:
+          type: array
+          items:
+            type: string
+          description: Record IDs.
+    AgentRunRequest:
+      type: object
+      required:
+      - instructions
+      properties:
+        instructions:
+          type: string
+          minLength: 1
+        tools:
+          type: array
+          items:
+            $ref: '#/components/schemas/McpToolName'
+          description: 'Allowed tools. Default: all permitted.'
+        sources:
+          type: array
+          items:
+            type: string
+          description: 'Limit to these source IDs. Default: all permitted.'
+        max_tool_calls:
+          type: integer
+          minimum: 1
+          maximum: 100
+          default: 20
+    AgentSession:
+      type: object
+      required:
+      - id
+      - client
+      - credential
+      - tool_calls
+      - cost_usd
+      - started_at
+      properties:
+        id:
+          type: string
+        client:
+          type: string
+          examples:
+          - Claude Desktop 1.4
+        credential:
+          $ref: '#/components/schemas/CredentialRef'
+        tool_calls:
+          type: integer
+        cost_usd:
+          type: number
+        started_at:
+          type: string
+          format: date-time
+    AgentSessionList:
+      type: object
+      required:
+      - data
+      - next_cursor
+      properties:
+        data:
+          type: array
+          items:
+            $ref: '#/components/schemas/AgentSession'
+        next_cursor:
+          $ref: '#/components/schemas/Cursor'
+    AppGrant:
+      type: object
+      required:
+      - id
+      - app_id
+      - status
+      - drives
+      - created_at
+      properties:
+        id:
+          type: string
+        app_id:
+          type: string
+          description: The Nx application (Entra client ID).
+        status:
+          type: string
+          enum:
+          - pending
+          - consented
+          - revoked
+        consent_url:
+          type:
+          - string
+          - 'null'
+          format: uri
+          description: Pending grants.
+        drives:
+          type: integer
+          description: Drives synced through this application.
+        throttled_until:
+          type:
+          - string
+          - 'null'
+          format: date-time
+        consented_at:
+          type:
+          - string
+          - 'null'
+          format: date-time
+        created_at:
+          type: string
+          format: date-time
+    AppGrantList:
+      type: object
+      required:
+      - data
+      - recommended
+      properties:
+        data:
+          type: array
+          items:
+            $ref: '#/components/schemas/AppGrant'
+        recommended:
+          type: integer
+          minimum: 1
+    Budget:
+      type: object
+      required:
+      - id
+      - name
+      - scope
+      - type
+      - limit_usd
+      - spent_usd
+      - alert_thresholds
+      - notify
+      - blocking
+      - created_at
+      properties:
+        id:
+          type: string
+        name:
+          type: string
+        scope:
+          $ref: '#/components/schemas/BudgetScope'
+        scope_label:
+          type: string
+          examples:
+          - Meter · Documents ingested
+        type:
+          type: string
+          enum:
+          - soft
+          - hard
+        limit_usd:
+          type: number
+        spent_usd:
+          type: number
+        alert_thresholds:
+          type: array
+          items:
+            type: integer
+            enum:
+            - 50
+            - 80
+            - 100
+        notify:
+          type: array
+          items:
+            type: string
+            format: email
+        blocking:
+          type: boolean
+          description: Hard budget at its limit; calls in scope return 402.
+        created_at:
+          type: string
+          format: date-time
+    BudgetCreate:
+      type: object
+      required:
+      - scope
+      - type
+      - limit_usd
+      properties:
+        name:
+          type: string
+          description: 'Default: derived from the scope.'
+        scope:
+          $ref: '#/components/schemas/BudgetScope'
+        type:
+          type: string
+          enum:
+          - soft
+          - hard
+          description: '`hard` only with `token` scope (a spend cap); the organization balance governs everything else.'
+        limit_usd:
+          type: number
+          exclusiveMinimum: 0
+        alert_thresholds:
+          type: array
+          items:
+            type: integer
+            enum:
+            - 50
+            - 80
+            - 100
+          default:
+          - 50
+          - 80
+          - 100
+        notify:
+          type: array
+          items:
+            type: string
+            format: email
+    BudgetList:
+      type: object
+      required:
+      - data
+      properties:
+        data:
+          type: array
+          items:
+            $ref: '#/components/schemas/Budget'
+    BudgetScope:
+      type: object
+      required:
+      - type
+      properties:
+        type:
+          type: string
+          enum:
+          - workspace
+          - meter
+          - token
+        meter:
+          $ref: '#/components/schemas/Meter'
+        token_id:
+          type: string
+    BudgetUpdate:
+      type: object
+      properties:
+        name:
+          type: string
+        limit_usd:
+          type: number
+          exclusiveMinimum: 0
+        alert_thresholds:
+          type: array
+          items:
+            type: integer
+            enum:
+            - 50
+            - 80
+            - 100
+        notify:
+          type: array
+          items:
+            type: string
+            format: email
+    ChatCitation:
+      type: object
+      required:
+      - marker
+      - record_id
+      - title
+      - source_id
+      - snippet
+      description: A record the answer cites; `marker` is the number in its `[n]` markers.
+      properties:
+        marker:
+          type: integer
+          minimum: 1
+        record_id:
+          type: string
+        title:
+          type: string
+        path:
+          type: string
+          description: Source URI.
+        source_id:
+          type: string
+        record_type:
+          type: string
+        snippet:
+          type: string
+          description: The passage the answer relies on.
+    ChatConversation:
+      type: object
+      required:
+      - id
+      - title
+      - sources
+      - message_count
+      - last_message_preview
+      - created_at
+      - updated_at
+      properties:
+        id:
+          type: string
+          examples:
+          - conv_8Kd2
+        title:
+          type: string
+          examples:
+          - Indemnity caps in vendor contracts
+        sources:
+          type: array
+          items:
+            type: string
+          description: 'Data source IDs the agent may search. Empty: every source the caller may read.'
+        message_count:
+          type: integer
+        last_message_preview:
+          type:
+          - string
+          - 'null'
+        created_at:
+          type: string
+          format: date-time
+        updated_at:
+          type: string
+          format: date-time
+    ChatConversationCreate:
+      type: object
+      properties:
+        title:
+          type: string
+          maxLength: 120
+        sources:
+          type: array
+          items:
+            type: string
+    ChatConversationDetail:
+      type: object
+      required:
+      - conversation
+      - messages
+      properties:
+        conversation:
+          $ref: '#/components/schemas/ChatConversation'
+        messages:
+          type: array
+          items:
+            $ref: '#/components/schemas/ChatMessage'
+    ChatConversationList:
+      type: object
+      required:
+      - data
+      - next_cursor
+      properties:
+        data:
+          type: array
+          items:
+            $ref: '#/components/schemas/ChatConversation'
+        next_cursor:
+          $ref: '#/components/schemas/Cursor'
+    ChatConversationUpdate:
+      type: object
+      properties:
+        title:
+          type: string
+          minLength: 1
+          maxLength: 120
+        sources:
+          type: array
+          items:
+            type: string
+    ChatMessage:
+      type: object
+      required:
+      - id
+      - role
+      - content
+      - created_at
+      properties:
+        id:
+          type: string
+          examples:
+          - msg_3Fq9
+        role:
+          type: string
+          enum:
+          - user
+          - assistant
+        content:
+          type: string
+          description: Markdown. Assistant answers cite records with `[n]` markers.
+        citations:
+          type: array
+          items:
+            $ref: '#/components/schemas/ChatCitation'
+        reasoning:
+          type: array
+          items:
+            $ref: '#/components/schemas/ChatReasoningStep'
+        tool_calls:
+          type: integer
+        cost_usd:
+          type: number
+        created_at:
+          type: string
+          format: date-time
+    ChatMessageCreate:
+      type: object
+      required:
+      - content
+      properties:
+        content:
+          type: string
+          minLength: 1
+          maxLength: 8000
+    ChatReasoningStep:
+      type: object
+      required:
+      - summary
+      properties:
+        summary:
+          type: string
+          examples:
+          - Searched vendor contracts for indemnity caps
+        detail:
+          type:
+          - string
+          - 'null'
+        tool:
+          oneOf:
+          - $ref: '#/components/schemas/McpToolName'
+          - type: 'null'
+    ChatStreamEvent:
+      type: object
+      required:
+      - type
+      description: 'One server-sent event of `sendChatMessage`. `status`: what the agent is doing now · `step`: a finished
+        reasoning step · `delta`: answer text to append · `complete`: the stored assistant message · `error`: the answer failed
+        (nothing is billed for an answer that never started).'
+      properties:
+        type:
+          type: string
+          enum:
+          - status
+          - step
+          - delta
+          - complete
+          - error
+        status:
+          type: string
+        step:
+          $ref: '#/components/schemas/ChatReasoningStep'
+        text:
+          type: string
+        message:
+          $ref: '#/components/schemas/ChatMessage'
+        error:
+          type: string
+    Classification:
+      type: object
+      required:
+      - record_type
+      - owner
+      - sensitivity
+      - retention
+      properties:
+        record_id:
+          type: string
+        record_type:
+          type: string
+        owner:
+          type: string
+        sensitivity:
+          $ref: '#/components/schemas/Sensitivity'
+        retention:
+          type: string
+          examples:
+          - 7y after termination
+    CredentialRef:
+      type: object
+      description: What authenticated a call — an API token or an OAuth grant (connected app).
+      required:
+      - type
+      - id
+      - name
+      properties:
+        type:
+          type: string
+          enum:
+          - token
+          - oauth
+        id:
+          type: string
+          description: Token ID or grant ID.
+        name:
+          type: string
+          examples:
+          - support-copilot-mcp
+          - Claude · Lena Chen
+    Cursor:
+      type:
+      - string
+      - 'null'
+      description: Pass as `cursor` to fetch the next page. `null` on the last page.
+    Deleted:
+      type: object
+      required:
+      - id
+      - deleted
+      properties:
+        id:
+          type: string
+        deleted:
+          type: boolean
+          const: true
+    Error:
+      type: object
+      required:
+      - error
+      properties:
+        error:
+          type: object
+          required:
+          - type
+          - message
+          additionalProperties: true
+          properties:
+            type:
+              $ref: '#/components/schemas/ErrorType'
+            message:
+              type: string
+            param:
+              type: string
+              description: The request field at fault (invalid_request).
+            required_scope:
+              type: string
+              description: The missing scope (insufficient_scope).
+            budget:
+              type: string
+              description: The exhausted budget (budget_exceeded).
+            limit_usd:
+              type: number
+            spent_usd:
+              type: number
+            resolve:
+              type: string
+              description: How to recover.
+            balance_usd:
+              type: number
+              description: The organization balance (insufficient_balance).
+            limit_per_minute:
+              type: integer
+              description: The organization's request rate (rate_limited).
+    ErrorType:
+      type: string
+      enum:
+      - invalid_request
+      - unauthenticated
+      - budget_exceeded
+      - spend_limit_reached
+      - insufficient_balance
+      - insufficient_scope
+      - permission_denied
+      - not_found
+      - conflict
+      - unprocessable
+      - rate_limited
+      - internal_error
+    EstateBucket:
+      type: object
+      required:
+      - key
+      - files
+      - bytes
+      properties:
+        key:
+          type: string
+        files:
+          type: integer
+        bytes:
+          type: integer
+          format: int64
+    EstateTotals:
+      type: object
+      required:
+      - sites
+      - libraries
+      - onedrives
+      - folders
+      - files
+      - bytes
+      properties:
+        sites:
+          type: integer
+        libraries:
+          type: integer
+          description: Document libraries (drives) outside OneDrive.
+        onedrives:
+          type: integer
+        folders:
+          type: integer
+        files:
+          type: integer
+        bytes:
+          type: integer
+          format: int64
+        shared_items:
+          type: integer
+          description: Items shared beyond their site or owner.
+    IngestUploadRequest:
+      type: object
+      required:
+      - file
+      properties:
+        file:
+          type: array
+          items:
+            type: string
+            format: binary
+        metadata:
+          type: string
+          description: JSON-encoded object.
+        classify:
+          type: boolean
+          default: true
+    IngestUrlRequest:
+      type: object
+      required:
+      - url
+      properties:
+        url:
+          type: string
+          format: uri
+          description: A URL (typically signed) Nx fetches once.
+        metadata:
+          type: object
+          additionalProperties:
+            type: string
+          description: Stored with the record.
+        classify:
+          type: boolean
+          default: true
+    Job:
+      type: object
+      required:
+      - id
+      - source
+      - documents
+      - status
+      - progress
+      - record_types
+      - created_at
+      properties:
+        id:
+          type: string
+          examples:
+          - job_7Hq2xK
+        source:
+          type: string
+          enum:
+          - api
+          - upload
+          - sharepoint
+          - s3
+          - gdrive
+          - box
+        source_id:
+          type:
+          - string
+          - 'null'
+        documents:
+          type: integer
+        status:
+          $ref: '#/components/schemas/JobStatus'
+        progress:
+          type: integer
+          minimum: 0
+          maximum: 100
+        record_types:
+          type: array
+          items:
+            type: string
+          description: Distinct record types assigned so far.
+        estimated_cost_usd:
+          type: number
+        classified:
+          type: array
+          description: Per-document classifications, on completed jobs with ≤ 100 documents.
+          items:
+            $ref: '#/components/schemas/Classification'
+        error:
+          type:
+          - string
+          - 'null'
+        created_at:
+          type: string
+          format: date-time
+        completed_at:
+          type:
+          - string
+          - 'null'
+          format: date-time
+    JobList:
+      type: object
+      required:
+      - data
+      - next_cursor
+      properties:
+        data:
+          type: array
+          items:
+            $ref: '#/components/schemas/Job'
+        next_cursor:
+          $ref: '#/components/schemas/Cursor'
+    JobStatus:
+      type: string
+      enum:
+      - queued
+      - running
+      - paused
+      - completed
+      - failed
+    McpServer:
+      type: object
+      required:
+      - url
+      - status
+      - oauth
+      - tools
+      - price_per_1k_calls_usd
+      properties:
+        url:
+          type: string
+          format: uri
+          examples:
+          - https://mcp.nx.dev/mcp
+          description: The same URL for every workspace (the deployment's MCP resource). The credential selects the workspace.
+        status:
+          type: string
+          enum:
+          - online
+          - degraded
+          - offline
+        oauth:
+          type: object
+          required:
+          - resource_metadata_url
+          - authorization_server
+          properties:
+            resource_metadata_url:
+              type: string
+              format: uri
+              examples:
+              - https://mcp.nx.dev/.well-known/oauth-protected-resource
+            authorization_server:
+              type: string
+              format: uri
+              examples:
+              - https://auth.nx.dev
+        tools:
+          type: array
+          items:
+            $ref: '#/components/schemas/McpTool'
+        price_per_1k_calls_usd:
+          type: number
+    McpTool:
+      type: object
+      required:
+      - name
+      - description
+      - scope
+      - enabled
+      properties:
+        name:
+          $ref: '#/components/schemas/McpToolName'
+        description:
+          type: string
+        scope:
+          $ref: '#/components/schemas/Scope'
+        enabled:
+          type: boolean
+    McpToolName:
+      type: string
+      enum:
+      - search_records
+      - get_record
+      - list_sources
+      - summarize_records
+      - ingest_document
+    Meter:
+      type: string
+      enum:
+      - docs
+      - gb
+      - search
+      - agent
+      description: '`docs` documents ingested · `gb` GB processed · `search` search queries · `agent` agent / MCP tool calls.'
+    MeterUsage:
+      allOf:
+      - $ref: '#/components/schemas/Rate'
+      - type: object
+        required:
+        - quantity
+        - cost_usd
+        - daily
+        properties:
+          quantity:
+            type: number
+          cost_usd:
+            type: number
+          daily:
+            type: array
+            items:
+              type: number
+            description: Cost per day so far this period.
+    NodeSelection:
+      type: string
+      enum:
+      - included
+      - excluded
+      - partial
+    Provider:
+      type: string
+      enum:
+      - sharepoint
+      - s3
+      - gdrive
+      - box
+    Rate:
+      type: object
+      required:
+      - meter
+      - label
+      - unit
+      - unit_size
+      - price_usd
+      properties:
+        meter:
+          $ref: '#/components/schemas/Meter'
+        label:
+          type: string
+          examples:
+          - Documents ingested
+        unit:
+          type: string
+          examples:
+          - per 1K docs
+        unit_size:
+          type: integer
+          examples:
+          - 1000
+        price_usd:
+          type: number
+          examples:
+          - 1.2
+    RecordRetention:
+      type: object
+      required:
+      - status
+      properties:
+        status:
+          $ref: '#/components/schemas/RetentionStatus'
+        series:
+          type:
+          - string
+          - 'null'
+          examples:
+          - VC-01
+        until:
+          type:
+          - string
+          - 'null'
+          format: date
+          description: '`null` while an event trigger has not fired.'
+        rule_summary:
+          type:
+          - string
+          - 'null'
+          examples:
+          - until superseded + 2y
+        hold_id:
+          type:
+          - string
+          - 'null'
+        schedule_version:
+          type:
+          - string
+          - 'null'
+    RetentionStatus:
+      type: string
+      enum:
+      - active
+      - hold
+      - expired
+      - unscheduled
+    Scope:
+      type: string
+      enum:
+      - ingest:read
+      - ingest:write
+      - search:read
+      - search:write
+      - agent:read
+      - agent:write
+      - sources:read
+      - sources:write
+      - billing:read
+      - billing:write
+    SearchRequest:
+      type: object
+      required:
+      - query
+      properties:
+        query:
+          type: string
+          minLength: 1
+          description: Natural-language or keyword query.
+        sources:
+          type: array
+          items:
+            type: string
+          description: 'Limit to these source IDs. Default: every source the token can read.'
+        mode:
+          type: string
+          enum:
+          - hybrid
+          - semantic
+          - keyword
+          default: hybrid
+        filters:
+          type: object
+          properties:
+            record_type:
+              type: array
+              items:
+                type: string
+            owner:
+              type: string
+            sensitivity:
+              type: array
+              items:
+                $ref: '#/components/schemas/Sensitivity'
+            retention_status:
+              $ref: '#/components/schemas/RetentionStatus'
+            created_after:
+              type: string
+              format: date
+            created_before:
+              type: string
+              format: date
+        limit:
+          type: integer
+          minimum: 1
+          maximum: 100
+          default: 10
+    SearchResponse:
+      type: object
+      required:
+      - took_ms
+      - total
+      - results
+      properties:
+        took_ms:
+          type: integer
+        total:
+          type: integer
+        cost_usd:
+          type: number
+        results:
+          type: array
+          items:
+            $ref: '#/components/schemas/SearchResult'
+    SearchResult:
+      type: object
+      required:
+      - id
+      - title
+      - path
+      - source_id
+      - record_type
+      - owner
+      - sensitivity
+      - score
+      - snippet
+      - retention
+      properties:
+        id:
+          type: string
+        title:
+          type: string
+        path:
+          type: string
+          description: Source URI.
+        source_id:
+          type: string
+        record_type:
+          type: string
+        owner:
+          type: string
+        sensitivity:
+          $ref: '#/components/schemas/Sensitivity'
+        score:
+          type: number
+          minimum: 0
+          maximum: 1
+        snippet:
+          type: string
+        retention:
+          $ref: '#/components/schemas/RecordRetention'
+    SelectionPreview:
+      type: object
+      required:
+      - files
+      - bytes
+      - containers
+      properties:
+        files:
+          type: integer
+        bytes:
+          type: integer
+          format: int64
+        containers:
+          type: integer
+          description: Sites, libraries and drives touched.
+        complete:
+          type: boolean
+          description: False while the inventory is still running; counts will grow.
+    Sensitivity:
+      type: string
+      enum:
+      - public
+      - internal
+      - confidential
+      - pii
+      - phi
+      - pci
+    Source:
+      type: object
+      required:
+      - id
+      - provider
+      - mode
+      - name
+      - detail
+      - schedule
+      - status
+      - phase
+      - progress
+      - documents
+      - size_gb
+      - selection_summary
+      - estate_summary
+      - created_at
+      properties:
+        id:
+          type: string
+          examples:
+          - src_01J9Z…
+        provider:
+          $ref: '#/components/schemas/Provider'
+        mode:
+          $ref: '#/components/schemas/SourceMode'
+        name:
+          type: string
+          examples:
+          - acmehealth.sharepoint.com
+        account:
+          type:
+          - string
+          - 'null'
+          description: The connected tenant, bucket or domain.
+        detail:
+          type: string
+          examples:
+          - 3 sites · Legal, HR, Finance
+        schedule:
+          $ref: '#/components/schemas/SyncSchedule'
+        status:
+          type: string
+          enum:
+          - healthy
+          - syncing
+          - paused
+          - error
+          - action_required
+          description: '`action_required`: consent was revoked or change notifications are failing; see `error`.'
+        phase:
+          $ref: '#/components/schemas/SourcePhase'
+        progress:
+          type: integer
+          minimum: 0
+          maximum: 100
+          description: Progress of the current phase.
+        documents:
+          type: integer
+          description: Documents ingested from this source.
+        size_gb:
+          type: number
+          description: Size of the ingested documents.
+        selection_summary:
+          oneOf:
+          - type: object
+            required:
+            - mode
+            - files
+            - bytes
+            properties:
+              mode:
+                type: string
+                enum:
+                - all
+                - custom
+              files:
+                type: integer
+              bytes:
+                type: integer
+                format: int64
+          - type: 'null'
+          description: '`null` until content is selected.'
+        estate_summary:
+          oneOf:
+          - $ref: '#/components/schemas/EstateTotals'
+          - type: 'null'
+          description: '`null` until discovery finishes.'
+        last_synced_at:
+          type:
+          - string
+          - 'null'
+          format: date-time
+        next_sync_at:
+          type:
+          - string
+          - 'null'
+          format: date-time
+        error:
+          type:
+          - string
+          - 'null'
+        created_at:
+          type: string
+          format: date-time
+    SourceAuthorization:
+      type: object
+      required:
+      - id
+      - provider
+      - mode
+      - status
+      properties:
+        id:
+          type: string
+        provider:
+          $ref: '#/components/schemas/Provider'
+        mode:
+          $ref: '#/components/schemas/SourceMode'
+        status:
+          type: string
+          enum:
+          - pending
+          - verified
+          - failed
+        authorize_url:
+          type:
+          - string
+          - 'null'
+          format: uri
+          description: OAuth and admin-consent providers.
+        external_id:
+          type:
+          - string
+          - 'null'
+          description: IAM providers. Use as the role's sts:ExternalId condition.
+        account:
+          type:
+          - string
+          - 'null'
+          description: The verified tenant, bucket or domain, e.g. acmehealth.sharepoint.com.
+        error:
+          type:
+          - string
+          - 'null'
+        expires_at:
+          type: string
+          format: date-time
+          description: A pending authorization must be verified before this time.
+    SourceAuthorizationCreate:
+      type: object
+      required:
+      - provider
+      properties:
+        provider:
+          $ref: '#/components/schemas/Provider'
+        mode:
+          allOf:
+          - $ref: '#/components/schemas/SourceMode'
+          default: tenant
+          description: Microsoft 365 only. Ignored by other providers.
+        redirect_uri:
+          type: string
+          format: uri
+          description: OAuth providers only.
+    SourceAuthorizationVerify:
+      type: object
+      description: 'Pass the provider''s redirect parameters through unchanged.
+
+        Microsoft 365 admin consent: `tenant`, `admin_consent`, `state` (or `error`, `error_description`).
+
+        OAuth (`personal` mode, Google Drive, Box): `code`, `state`.
+
+        IAM (Amazon S3): `bucket`, `region`, `role_arn`.
+
+        '
+      properties:
+        code:
+          type: string
+          description: OAuth authorization code from the redirect.
+        state:
+          type: string
+        tenant:
+          type: string
+          description: Microsoft 365 tenant ID from the admin-consent redirect.
+        admin_consent:
+          type: string
+          examples:
+          - 'True'
+        error:
+          type: string
+        error_description:
+          type: string
+        bucket:
+          type: string
+          examples:
+          - acme-claims-archive
+        region:
+          type: string
+          examples:
+          - us-east-1
+        role_arn:
+          type: string
+          examples:
+          - arn:aws:iam::123456789012:role/nx-reader
+    SourceCreate:
+      type: object
+      required:
+      - authorization_id
+      - schedule
+      properties:
+        authorization_id:
+          type: string
+          description: A verified authorization.
+        name:
+          type: string
+          description: 'Default: the verified account.'
+        schedule:
+          $ref: '#/components/schemas/SyncSchedule'
+    SourceEstate:
+      type: object
+      required:
+      - source_id
+      - as_of
+      - inventory
+      - totals
+      - by_type
+      - by_age
+      - top_containers
+      properties:
+        source_id:
+          type: string
+        as_of:
+          type: string
+          format: date-time
+        inventory:
+          type: object
+          required:
+          - status
+          - containers_total
+          - containers_done
+          properties:
+            status:
+              type: string
+              enum:
+              - pending
+              - running
+              - complete
+            containers_total:
+              type: integer
+            containers_done:
+              type: integer
+        totals:
+          $ref: '#/components/schemas/EstateTotals'
+        by_type:
+          type: array
+          items:
+            $ref: '#/components/schemas/EstateBucket'
+          description: 'Keys: documents, spreadsheets, presentations, pdf, email, images, media, archives, other.'
+        by_age:
+          type: array
+          items:
+            $ref: '#/components/schemas/EstateBucket'
+          description: 'By last modified. Keys: lt_1y, 1y_3y, 3y_7y, gt_7y.'
+        top_containers:
+          type: array
+          items:
+            $ref: '#/components/schemas/SourceNode'
+          description: Largest sites and drives.
+    SourceList:
+      type: object
+      required:
+      - data
+      properties:
+        data:
+          type: array
+          items:
+            $ref: '#/components/schemas/Source'
+    SourceMode:
+      type: string
+      enum:
+      - tenant
+      - personal
+      description: '`tenant`: an administrator grants app-only read access to the whole organization (Microsoft 365). `personal`:
+        delegated access to one user''s own drive.'
+    SourceNode:
+      type: object
+      required:
+      - ref
+      - kind
+      - name
+      - path
+      - has_children
+      - selection
+      properties:
+        ref:
+          type: string
+          description: Opaque, stable node reference, e.g. `site:…`, `drive:…`, `item:…`. Use as `parent` and in selections.
+          examples:
+          - drive:b!x1
+        kind:
+          type: string
+          enum:
+          - group
+          - site
+          - library
+          - onedrive
+          - folder
+          - file
+          - bucket
+          - prefix
+        name:
+          type: string
+          examples:
+          - Contracts
+        path:
+          type: string
+          examples:
+          - Legal / Contracts
+        web_url:
+          type:
+          - string
+          - 'null'
+          format: uri
+        has_children:
+          type: boolean
+        files:
+          type:
+          - integer
+          - 'null'
+          description: Recursive file count. `null` until inventoried.
+        bytes:
+          type:
+          - integer
+          - 'null'
+          format: int64
+        last_modified:
+          type:
+          - string
+          - 'null'
+          format: date-time
+        selection:
+          $ref: '#/components/schemas/NodeSelection'
+    SourceNodeList:
+      type: object
+      required:
+      - data
+      - next_cursor
+      properties:
+        data:
+          type: array
+          items:
+            $ref: '#/components/schemas/SourceNode'
+        next_cursor:
+          $ref: '#/components/schemas/Cursor'
+    SourcePhase:
+      type: string
+      enum:
+      - discovering
+      - inventorying
+      - awaiting_selection
+      - syncing
+      - idle
+      description: 'Where the source is in its lifecycle. `awaiting_selection`: the estate is inventoried and nothing is selected
+        yet.'
+    SourceRun:
+      type: object
+      required:
+      - id
+      - kind
+      - trigger
+      - status
+      - counters
+      - started_at
+      properties:
+        id:
+          type: string
+        kind:
+          type: string
+          enum:
+          - discover
+          - inventory
+          - sync
+          - reconcile
+        trigger:
+          type: string
+          enum:
+          - initial
+          - schedule
+          - webhook
+          - manual
+          - selection
+        status:
+          type: string
+          enum:
+          - queued
+          - running
+          - completed
+          - failed
+          - cancelled
+        container:
+          oneOf:
+          - $ref: '#/components/schemas/SourceNode'
+          - type: 'null'
+        counters:
+          type: object
+          required:
+          - seen
+          - added
+          - updated
+          - deleted
+          - bytes
+          properties:
+            seen:
+              type: integer
+            added:
+              type: integer
+            updated:
+              type: integer
+            deleted:
+              type: integer
+            bytes:
+              type: integer
+              format: int64
+        error:
+          type:
+          - string
+          - 'null'
+        started_at:
+          type: string
+          format: date-time
+        finished_at:
+          type:
+          - string
+          - 'null'
+          format: date-time
+    SourceRunList:
+      type: object
+      required:
+      - data
+      - next_cursor
+      properties:
+        data:
+          type: array
+          items:
+            $ref: '#/components/schemas/SourceRun'
+        next_cursor:
+          $ref: '#/components/schemas/Cursor'
+    SourceSelection:
+      allOf:
+      - $ref: '#/components/schemas/SourceSelectionUpdate'
+      - type: object
+        required:
+        - files
+        - bytes
+        - updated_at
+        properties:
+          files:
+            type: integer
+          bytes:
+            type: integer
+            format: int64
+          updated_at:
+            type:
+            - string
+            - 'null'
+            format: date-time
+    SourceSelectionUpdate:
+      type: object
+      required:
+      - mode
+      properties:
+        mode:
+          type: string
+          enum:
+          - all
+          - custom
+        include:
+          type: array
+          items:
+            type: string
+          maxItems: 1000
+          description: Node refs. `custom` only.
+        exclude:
+          type: array
+          items:
+            type: string
+          maxItems: 1000
+          description: 'Node refs inside included nodes (or anywhere with `mode: all`).'
+        include_new_sites:
+          type: boolean
+          default: false
+          description: 'Add sites and libraries created later. Implied by `mode: all`.'
+        include_onedrive:
+          type: boolean
+          default: false
+          description: 'Include every user''s OneDrive. Implied by `mode: all`.'
+    SourceUpdate:
+      type: object
+      properties:
+        name:
+          type: string
+          minLength: 1
+        schedule:
+          $ref: '#/components/schemas/SyncSchedule'
+    SyncSchedule:
+      type: string
+      enum:
+      - continuous
+      - hourly
+      - daily
+      description: '`continuous`: change notifications from the provider, plus a safety-net poll. `hourly` and `daily`: incremental
+        syncs on that cadence. Use `syncSource` to sync now.'
+    Usage:
+      type: object
+      required:
+      - period
+      - period_start
+      - period_end
+      - days_elapsed
+      - total_usd
+      - forecast_usd
+      - meters
+      - daily_spend_usd
+      - credit
+      properties:
+        period:
+          type: string
+          examples:
+          - 2026-10
+        period_start:
+          type: string
+          format: date
+        period_end:
+          type: string
+          format: date
+        days_elapsed:
+          type: integer
+        total_usd:
+          type: number
+        forecast_usd:
+          type: number
+          description: At the current run rate.
+        meters:
+          type: array
+          items:
+            $ref: '#/components/schemas/MeterUsage'
+        daily_spend_usd:
+          type: array
+          items:
+            type: number
+        next_invoice_at:
+          type: string
+          format: date
+        credit:
+          $ref: '#/components/schemas/UsageCredit'
+    UsageCredit:
+      type: object
+      required:
+      - organization_total_usd
+      - applied_usd
+      - remaining_usd
+      description: Free credit against the period's usage. Credit belongs to the **organization**, so these figures cover
+        every workspace of it, not only the workspace of the request. Provisional until the period closes.
+      properties:
+        organization_total_usd:
+          type: number
+          description: The organization's usage cost for the period (every workspace).
+        applied_usd:
+          type: number
+          description: Credit applied to the organization's usage in the period (at most `organization_total_usd`).
+        remaining_usd:
+          type: number
+          description: Unexpired credit left after the period.
+  securitySchemes:
+    bearerAuth:
+      type: http
+      scheme: bearer
+      bearerFormat: nx_live_… | nx_test_…
+      description: Workspace-bound API token. Create one under API tokens; the secret is shown once.
