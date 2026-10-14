@@ -516,6 +516,53 @@ paths:
   /v1/documents:
     parameters:
     - $ref: '#/components/parameters/WorkspaceHeader'
+    get:
+      tags:
+      - Data
+      operationId: listDocuments
+      summary: List documents
+      description: The workspace's documents, newest first, limited to the sources your token can read.
+      x-required-permission: ingest_search:view
+      x-required-scope: ingest:read
+      parameters:
+      - name: status
+        in: query
+        description: '`active` (default), `deleted` or `all`.'
+        schema:
+          $ref: '#/components/schemas/DocumentStatusFilter'
+      - name: source_id
+        in: query
+        schema:
+          type: string
+      - name: q
+        in: query
+        description: Matches the name or path, case-insensitively.
+        schema:
+          type: string
+          maxLength: 200
+      - name: modified_after
+        in: query
+        schema:
+          type: string
+          format: date-time
+      - name: modified_before
+        in: query
+        schema:
+          type: string
+          format: date-time
+      - $ref: '#/components/parameters/Limit'
+      - $ref: '#/components/parameters/Cursor'
+      responses:
+        '200':
+          description: Documents, newest first.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/DocumentList'
+        '400':
+          $ref: '#/components/responses/InvalidRequest'
+        '403':
+          $ref: '#/components/responses/Forbidden'
     post:
       tags:
       - Ingest
@@ -566,6 +613,155 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/Error'
+  /v1/documents/summary:
+    parameters:
+    - $ref: '#/components/parameters/WorkspaceHeader'
+    get:
+      tags:
+      - Data
+      operationId: getDocumentSummary
+      summary: Summarize the workspace's documents
+      description: Documents and bytes per source, live and deleted, and how long deleted documents' data is kept.
+      x-required-permission: ingest_search:view
+      x-required-scope: ingest:read
+      responses:
+        '200':
+          description: Summary.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/DocumentSummary'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+  /v1/documents/delete:
+    parameters:
+    - $ref: '#/components/parameters/WorkspaceHeader'
+    post:
+      tags:
+      - Data
+      operationId: deleteDocuments
+      summary: Delete documents
+      description: 'Deletes up to 200 documents by id, or every live document matching a filter. A filter delete must send
+
+        `expected_count`, the `matched` of a `dry_run` with the same filter: when the documents matching it changed
+
+        since, nothing is deleted and the answer is 409. A filter deletes at most 10,000 documents at a time (400
+
+        beyond). A deleted document leaves search, and its original and
+
+        parsed text are removed from the workspace''s bucket after the workspace''s `deleted_retention_days`; its
+
+        record and history are kept. A document from a connector is also excluded from its source''s selection so a
+
+        sync does not bring it back; removing that exclusion restores it.
+
+        '
+      x-required-permission: ingest_search:full
+      x-required-scope: ingest:write
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/DocumentDeleteRequest'
+            example:
+              filter:
+                source_id: src_01J8Z
+                modified_before: '2023-01-01T00:00:00Z'
+              dry_run: true
+      responses:
+        '200':
+          description: What was (or with `dry_run` would be) deleted.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/DocumentDeleteResult'
+        '400':
+          $ref: '#/components/responses/InvalidRequest'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '409':
+          $ref: '#/components/responses/Conflict'
+  /v1/documents/{document_id}/parsed:
+    parameters:
+    - $ref: '#/components/parameters/WorkspaceHeader'
+    - name: document_id
+      in: path
+      required: true
+      schema:
+        type: string
+        examples:
+        - doc_01J8Z
+    get:
+      tags:
+      - Data
+      operationId: getParsedDocument
+      summary: Get what the parser read from a document
+      description: The parsed text and what the parser found. 404 while the document is not parsed yet, when it could not
+        be parsed, or once a deleted document's data is removed.
+      x-required-permission: ingest_search:view
+      x-required-scope: ingest:read
+      responses:
+        '200':
+          description: Parsed output.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/DocumentParsed'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '503':
+          description: The workspace's storage is not available.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+  /v1/documents/{document_id}:
+    parameters:
+    - $ref: '#/components/parameters/WorkspaceHeader'
+    - name: document_id
+      in: path
+      required: true
+      schema:
+        type: string
+        examples:
+        - doc_01J8Z
+    get:
+      tags:
+      - Data
+      operationId: getDocument
+      summary: Get a document
+      description: A document with its history, oldest event first.
+      x-required-permission: ingest_search:view
+      x-required-scope: ingest:read
+      responses:
+        '200':
+          description: Document.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/DocumentDetail'
+        '404':
+          $ref: '#/components/responses/NotFound'
+    delete:
+      tags:
+      - Data
+      operationId: deleteDocument
+      summary: Delete a document
+      description: Deletes one document, as `deleteDocuments` does. Deleting a deleted document changes nothing.
+      x-required-permission: ingest_search:full
+      x-required-scope: ingest:write
+      responses:
+        '202':
+          description: Deleted; its data is removed after the workspace's deleted_retention_days.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Deleted'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
   /v1/jobs:
     parameters:
     - $ref: '#/components/parameters/WorkspaceHeader'
@@ -737,10 +933,12 @@ paths:
       - Agents
       operationId: runAgent
       summary: Run an agent
-      description: Run a hosted agent that plans tool calls over your records and returns a cited answer. Billed per tool
-        call.
+      description: Run a hosted agent that plans tool calls over your records and returns a cited answer. Billed by the language-model
+        tokens it used.
       x-required-scope: agent:write
-      x-meter: agent
+      x-meter:
+      - llm_input
+      - llm_output
       requestBody:
         required: true
         content:
@@ -888,9 +1086,9 @@ paths:
 
         the conversation''s sources (all the credential may read when it names none). The answer
 
-        cites records with `[n]` markers that match `citations[].marker`. Billed per tool call
+        cites records with `[n]` markers that match `citations[].marker`. Billed by the
 
-        like agent runs.
+        language-model tokens the answer used (`usage`), like agent runs.
 
 
         With `Accept: text/event-stream` the answer streams as server-sent events, each a JSON
@@ -903,7 +1101,9 @@ paths:
 
         '
       x-required-scope: agent:write
-      x-meter: agent
+      x-meter:
+      - llm_input
+      - llm_output
       requestBody:
         required: true
         content:
@@ -1112,6 +1312,16 @@ components:
                   message: The organization balance is used up.
                   balance_usd: -0.37
                   resolve: Add a payment method or top up in Billing → Balance.
+    Conflict:
+      description: The request conflicts with the current state of the resource.
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/Error'
+          example:
+            error:
+              type: conflict
+              message: A token named prod-ingest-worker already exists.
     Forbidden:
       description: The token lacks the scope or source grant, the user lacks the permission (workspace or organization), or
         the change would grant more than the caller holds (escalation guard).
@@ -1591,8 +1801,11 @@ components:
             $ref: '#/components/schemas/ChatReasoningStep'
         tool_calls:
           type: integer
+        usage:
+          $ref: '#/components/schemas/TokenUsage'
         cost_usd:
           type: number
+          description: 'What the answer cost: its tokens (tool calls are not billed on their own).'
         created_at:
           type: string
           format: date-time
@@ -1705,6 +1918,360 @@ components:
         deleted:
           type: boolean
           const: true
+    Document:
+      type: object
+      required:
+      - id
+      - source_id
+      - source_name
+      - source_provider
+      - name
+      - path
+      - web_url
+      - mime
+      - size
+      - version
+      - sha256
+      - metadata
+      - modified_at
+      - created_by
+      - ingest_status
+      - parsed_at
+      - chunk_count
+      - status
+      - deleted_at
+      - deleted_reason
+      - data_purged_at
+      - created_at
+      properties:
+        id:
+          type: string
+          examples:
+          - doc_01J8Z
+        source_id:
+          type: string
+        source_name:
+          type: string
+        source_provider:
+          type: string
+          description: '`upload` for uploaded documents, else the connector.'
+        name:
+          type: string
+        path:
+          type: string
+        web_url:
+          type:
+          - string
+          - 'null'
+          description: Where the document lives in its source system.
+        mime:
+          type:
+          - string
+          - 'null'
+        size:
+          type: integer
+          format: int64
+          description: Bytes.
+        version:
+          type:
+          - string
+          - 'null'
+        sha256:
+          type:
+          - string
+          - 'null'
+          description: SHA-256 of the stored original, hex. `null` until the original is stored.
+        metadata:
+          type:
+          - object
+          - 'null'
+          additionalProperties:
+            type: string
+          description: The metadata sent with the document when it was ingested (`metadata` of ingestDocuments). `null` when
+            none was sent.
+        modified_at:
+          type:
+          - string
+          - 'null'
+          format: date-time
+        created_by:
+          type:
+          - string
+          - 'null'
+        ingest_status:
+          type: string
+          enum:
+          - pending
+          - ingested
+          - failed
+        parsed_at:
+          type:
+          - string
+          - 'null'
+          format: date-time
+        chunk_count:
+          type:
+          - integer
+          - 'null'
+          description: Chunks the workspace's search index holds for the document. `null` until an index reports it.
+        status:
+          $ref: '#/components/schemas/DocumentStatus'
+        deleted_at:
+          type:
+          - string
+          - 'null'
+          format: date-time
+        deleted_reason:
+          oneOf:
+          - $ref: '#/components/schemas/DocumentDeletedReason'
+          - type: 'null'
+        data_purged_at:
+          type:
+          - string
+          - 'null'
+          format: date-time
+          description: When a deleted document's original and parsed text were removed. `null` while they are kept.
+        created_at:
+          type: string
+          format: date-time
+    DocumentDeleteRequest:
+      type: object
+      description: '`ids` or `filter`, not both.'
+      properties:
+        ids:
+          type: array
+          items:
+            type: string
+          minItems: 1
+          maxItems: 200
+          uniqueItems: true
+        filter:
+          $ref: '#/components/schemas/DocumentFilter'
+        expected_count:
+          type: integer
+          minimum: 0
+          description: 'Required with `filter` unless `dry_run`: the documents you expect it to delete.'
+        dry_run:
+          type: boolean
+          default: false
+          description: Count what would be deleted; delete nothing.
+    DocumentDeleteResult:
+      type: object
+      required:
+      - matched
+      - deleted
+      - bytes
+      - excluded
+      - purge_after
+      properties:
+        matched:
+          type: integer
+          description: Live documents matched.
+        deleted:
+          type: integer
+          description: Documents deleted (0 with dry_run).
+        bytes:
+          type: integer
+          format: int64
+          description: Size of the matched documents.
+        excluded:
+          type: integer
+          description: Connector documents excluded from their source's selection (would be, with dry_run).
+        purge_after:
+          type: string
+          format: date-time
+          description: When the deleted documents' data will be removed.
+    DocumentDeletedReason:
+      type: string
+      enum:
+      - source
+      - deselected
+      - source_removed
+      - bucket
+      - user
+      description: '`source`: gone from the source system. `deselected`: no longer selected on its source. `source_removed`:
+        its source was disconnected. `bucket`: its original was deleted from the workspace''s bucket. `user`: deleted through
+        the API.'
+    DocumentDetail:
+      allOf:
+      - $ref: '#/components/schemas/Document'
+      - type: object
+        required:
+        - events
+        properties:
+          events:
+            type: array
+            items:
+              $ref: '#/components/schemas/DocumentEvent'
+    DocumentEvent:
+      type: object
+      required:
+      - kind
+      - reason
+      - version
+      - size
+      - at
+      properties:
+        kind:
+          type: string
+          enum:
+          - added
+          - modified
+          - deleted
+          - restored
+          - raw_purged
+          - data_purged
+        reason:
+          type:
+          - string
+          - 'null'
+        version:
+          type:
+          - string
+          - 'null'
+        size:
+          type:
+          - integer
+          - 'null'
+          format: int64
+        at:
+          type: string
+          format: date-time
+    DocumentFilter:
+      type: object
+      description: Live documents matching every field given. An empty filter matches every live document.
+      properties:
+        source_id:
+          type: string
+        q:
+          type: string
+          maxLength: 200
+          description: Matches the name or path, case-insensitively.
+        modified_after:
+          type: string
+          format: date-time
+        modified_before:
+          type: string
+          format: date-time
+    DocumentList:
+      type: object
+      required:
+      - data
+      - next_cursor
+      properties:
+        data:
+          type: array
+          items:
+            $ref: '#/components/schemas/Document'
+        next_cursor:
+          $ref: '#/components/schemas/Cursor'
+    DocumentParsed:
+      type: object
+      description: What the parser read from a document.
+      required:
+      - parser
+      - parser_version
+      - page_count
+      - language
+      - metadata
+      - text
+      - chars
+      - truncated
+      properties:
+        parser:
+          type: string
+          description: The parser that read it.
+        parser_version:
+          type: string
+        page_count:
+          type:
+          - integer
+          - 'null'
+        language:
+          type:
+          - string
+          - 'null'
+        metadata:
+          type: object
+          additionalProperties: true
+          description: Fields the parser found (title, author, …), as the index uses them.
+        text:
+          type: string
+          description: The text as Markdown, the first 1 MB at most.
+        chars:
+          type: integer
+          description: Length of the whole text in characters.
+        truncated:
+          type: boolean
+          description: '`text` holds only the first 1 MB.'
+    DocumentSourceSummary:
+      type: object
+      required:
+      - source_id
+      - source_name
+      - source_provider
+      - documents
+      - bytes
+      - deleted
+      - purge_pending
+      properties:
+        source_id:
+          type: string
+        source_name:
+          type: string
+        source_provider:
+          type: string
+        documents:
+          type: integer
+          description: Live documents.
+        bytes:
+          type: integer
+          format: int64
+          description: Size of the live documents.
+        deleted:
+          type: integer
+          description: Deleted documents (their records are kept).
+        purge_pending:
+          type: integer
+          description: Deleted documents whose data is not removed yet.
+    DocumentStatus:
+      type: string
+      enum:
+      - active
+      - deleted
+    DocumentStatusFilter:
+      type: string
+      enum:
+      - active
+      - deleted
+      - all
+      default: active
+    DocumentSummary:
+      type: object
+      required:
+      - documents
+      - bytes
+      - deleted
+      - purge_pending
+      - deleted_retention_days
+      - sources
+      properties:
+        documents:
+          type: integer
+        bytes:
+          type: integer
+          format: int64
+        deleted:
+          type: integer
+        purge_pending:
+          type: integer
+        deleted_retention_days:
+          type: integer
+          description: Days a deleted document's data is kept before it is removed.
+        sources:
+          type: array
+          items:
+            $ref: '#/components/schemas/DocumentSourceSummary'
     Error:
       type: object
       required:
@@ -1868,6 +2435,12 @@ components:
           type: integer
           minimum: 0
           maximum: 100
+          description: Documents ingested (searchable) as a percentage of all of them.
+        parsed:
+          type: integer
+          minimum: 0
+          description: Documents the parser has finished with (read, or failed to read). A `running` job with `parsed` below
+            `documents` is parsing; one with every document parsed is waiting for the workspace's index to be built.
         record_types:
           type: array
           items:
@@ -1920,6 +2493,8 @@ components:
       - oauth
       - tools
       - price_per_1k_calls_usd
+      - price_per_1m_input_tokens_usd
+      - price_per_1m_output_tokens_usd
       properties:
         url:
           type: string
@@ -1955,6 +2530,13 @@ components:
             $ref: '#/components/schemas/McpTool'
         price_per_1k_calls_usd:
           type: number
+          description: What 1K calls of the tools other than summarize_records cost.
+        price_per_1m_input_tokens_usd:
+          type: number
+          description: What 1M language-model input tokens cost (summarize_records).
+        price_per_1m_output_tokens_usd:
+          type: number
+          description: What 1M language-model output tokens cost.
     McpTool:
       type: object
       required:
@@ -1986,7 +2568,10 @@ components:
       - gb
       - search
       - agent
-      description: '`docs` documents ingested · `gb` GB processed · `search` search queries · `agent` agent / MCP tool calls.'
+      - llm_input
+      - llm_output
+      description: '`docs` documents ingested · `gb` GB processed · `search` search queries · `agent` agent / MCP tool calls
+        · `llm_input` and `llm_output` the language-model tokens an agent read and wrote, per 1M tokens.'
     MeterUsage:
       allOf:
       - $ref: '#/components/schemas/Rate'
@@ -2045,6 +2630,7 @@ components:
           type: number
           examples:
           - 1.2
+          description: 'The price in force: the organization''s own price where NVISIONx agreed one, else the list price.'
     RecordRetention:
       type: object
       required:
@@ -2739,6 +3325,19 @@ components:
       - daily
       description: '`continuous`: change notifications from the provider, plus a safety-net poll. `hourly` and `daily`: incremental
         syncs on that cadence. Use `syncSource` to sync now.'
+    TokenUsage:
+      type: object
+      description: The language-model tokens an answer used, billed on the `llm_input` and `llm_output` meters.
+      required:
+      - input_tokens
+      - output_tokens
+      properties:
+        input_tokens:
+          type: integer
+          description: Tokens the models read (prompts and retrieved text, cached reads included).
+        output_tokens:
+          type: integer
+          description: Tokens the models wrote.
     Usage:
       type: object
       required:

@@ -17,8 +17,6 @@ TYPES = ROOT / "src" / "nvisionx" / "types.py"
 SKIP_PATHS = {"/mcp"}
 RENAMES = {"Error1": "ErrorDetail"}
 INFO_KEYS = ("title", "version", "summary")
-PUBLIC_URL = "https://platform.us.nvisionx.ai"
-PLACEHOLDER_HOSTS = re.compile(r"https://(?:api|mcp|auth)(?:\.eu)?\.nx\.dev")
 
 
 def refs(node: object) -> set[str]:
@@ -69,7 +67,7 @@ def prune(spec: dict) -> dict:
     return {
         "openapi": spec["openapi"],
         "info": {k: spec["info"][k] for k in INFO_KEYS if k in spec["info"]},
-        "servers": [{"url": PUBLIC_URL, "description": "Production"}],
+        "servers": spec.get("servers", []),
         "security": [{"bearerAuth": []}],
         "paths": paths,
         "components": components,
@@ -146,8 +144,7 @@ def main() -> int:
     if args.from_spec:
         pruned = prune(yaml.safe_load(args.from_spec.read_text()))
         SPEC.parent.mkdir(exist_ok=True)
-        text = yaml.safe_dump(pruned, sort_keys=False, allow_unicode=True, width=120)
-        SPEC.write_text(PLACEHOLDER_HOSTS.sub(PUBLIC_URL, text))
+        SPEC.write_text(yaml.safe_dump(pruned, sort_keys=False, allow_unicode=True, width=120))
     generate()
     print(f"wrote {OUT.relative_to(ROOT)}")
     return 0

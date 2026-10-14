@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from datetime import date
-from typing import Annotated, Literal
+from typing import Annotated, Any, Literal
 
 from pydantic import AwareDatetime, ConfigDict, Field
 from typing_extensions import TypeAliasType
@@ -124,6 +124,129 @@ class Deleted(NxModel):
     deleted: Annotated[Literal[True], Open]
 
 
+class DocumentDeleteResult(NxModel):
+    matched: int
+    """
+    Live documents matched.
+    """
+    deleted: int
+    """
+    Documents deleted (0 with dry_run).
+    """
+    bytes: int
+    """
+    Size of the matched documents.
+    """
+    excluded: int
+    """
+    Connector documents excluded from their source's selection (would be, with dry_run).
+    """
+    purge_after: AwareDatetime
+    """
+    When the deleted documents' data will be removed.
+    """
+
+
+DocumentDeletedReason = TypeAliasType(
+    "DocumentDeletedReason", Annotated[Literal["source", "deselected", "source_removed", "bucket", "user"], Open]
+)
+"""
+`source`: gone from the source system. `deselected`: no longer selected on its source. `source_removed`: its source was disconnected. `bucket`: its original was deleted from the workspace's bucket. `user`: deleted through the API.
+"""
+
+
+class DocumentEvent(NxModel):
+    kind: Annotated[Literal["added", "modified", "deleted", "restored", "raw_purged", "data_purged"], Open]
+    reason: str | None
+    version: str | None
+    size: int | None
+    at: AwareDatetime
+
+
+class DocumentFilter(NxModel):
+    """
+    Live documents matching every field given. An empty filter matches every live document.
+    """
+
+    source_id: str | None = None
+    q: Annotated[str | None, Field(max_length=200)] = None
+    """
+    Matches the name or path, case-insensitively.
+    """
+    modified_after: AwareDatetime | None = None
+    modified_before: AwareDatetime | None = None
+
+
+class DocumentParsed(NxModel):
+    """
+    What the parser read from a document.
+    """
+
+    parser: str
+    """
+    The parser that read it.
+    """
+    parser_version: str
+    page_count: int | None
+    language: str | None
+    metadata: dict[str, Any]
+    """
+    Fields the parser found (title, author, …), as the index uses them.
+    """
+    text: str
+    """
+    The text as Markdown, the first 1 MB at most.
+    """
+    chars: int
+    """
+    Length of the whole text in characters.
+    """
+    truncated: bool
+    """
+    `text` holds only the first 1 MB.
+    """
+
+
+class DocumentSourceSummary(NxModel):
+    source_id: str
+    source_name: str
+    source_provider: str
+    documents: int
+    """
+    Live documents.
+    """
+    bytes: int
+    """
+    Size of the live documents.
+    """
+    deleted: int
+    """
+    Deleted documents (their records are kept).
+    """
+    purge_pending: int
+    """
+    Deleted documents whose data is not removed yet.
+    """
+
+
+DocumentStatus = TypeAliasType("DocumentStatus", Annotated[Literal["active", "deleted"], Open])
+
+
+DocumentStatusFilter = TypeAliasType("DocumentStatusFilter", Annotated[Literal["active", "deleted", "all"], Open])
+
+
+class DocumentSummary(NxModel):
+    documents: int
+    bytes: int
+    deleted: int
+    purge_pending: int
+    deleted_retention_days: int
+    """
+    Days a deleted document's data is kept before it is removed.
+    """
+    sources: list[DocumentSourceSummary]
+
+
 ErrorType = TypeAliasType(
     "ErrorType",
     Annotated[
@@ -205,9 +328,9 @@ McpToolName = TypeAliasType(
 )
 
 
-Meter = TypeAliasType("Meter", Annotated[Literal["docs", "gb", "search", "agent"], Open])
+Meter = TypeAliasType("Meter", Annotated[Literal["docs", "gb", "search", "agent", "llm_input", "llm_output"], Open])
 """
-`docs` documents ingested · `gb` GB processed · `search` search queries · `agent` agent / MCP tool calls.
+`docs` documents ingested · `gb` GB processed · `search` search queries · `agent` agent / MCP tool calls · `llm_input` and `llm_output` the language-model tokens an agent read and wrote, per 1M tokens.
 """
 
 
@@ -223,6 +346,9 @@ class Rate(NxModel):
     unit: Annotated[str, Field(examples=["per 1K docs"])]
     unit_size: Annotated[int, Field(examples=[1000])]
     price_usd: Annotated[float, Field(examples=[1.2])]
+    """
+    The price in force: the organization's own price where NVISIONx agreed one, else the list price.
+    """
 
 
 RetentionStatus = TypeAliasType("RetentionStatus", Annotated[Literal["active", "hold", "expired", "unscheduled"], Open])
@@ -397,6 +523,21 @@ SyncSchedule = TypeAliasType("SyncSchedule", Annotated[Literal["continuous", "ho
 """
 
 
+class TokenUsage(NxModel):
+    """
+    The language-model tokens an answer used, billed on the `llm_input` and `llm_output` meters.
+    """
+
+    input_tokens: int
+    """
+    Tokens the models read (prompts and retrieved text, cached reads included).
+    """
+    output_tokens: int
+    """
+    Tokens the models wrote.
+    """
+
+
 class UsageCredit(NxModel):
     """
     Free credit against the period's usage. Credit belongs to the **organization**, so these figures cover every workspace of it, not only the workspace of the request. Provisional until the period closes.
@@ -468,6 +609,78 @@ class Classification(NxModel):
     retention: Annotated[str, Field(examples=["7y after termination"])]
 
 
+class Document(NxModel):
+    id: Annotated[str, Field(examples=["doc_01J8Z"])]
+    source_id: str
+    source_name: str
+    source_provider: str
+    """
+    `upload` for uploaded documents, else the connector.
+    """
+    name: str
+    path: str
+    web_url: str | None
+    """
+    Where the document lives in its source system.
+    """
+    mime: str | None
+    size: int
+    """
+    Bytes.
+    """
+    version: str | None
+    sha256: str | None
+    """
+    SHA-256 of the stored original, hex. `null` until the original is stored.
+    """
+    metadata: dict[str, Any] | None
+    """
+    The metadata sent with the document when it was ingested (`metadata` of ingestDocuments). `null` when none was sent.
+    """
+    modified_at: AwareDatetime | None
+    created_by: str | None
+    ingest_status: Annotated[Literal["pending", "ingested", "failed"], Open]
+    parsed_at: AwareDatetime | None
+    chunk_count: int | None
+    """
+    Chunks the workspace's search index holds for the document. `null` until an index reports it.
+    """
+    status: DocumentStatus
+    deleted_at: AwareDatetime | None
+    deleted_reason: DocumentDeletedReason | None
+    data_purged_at: AwareDatetime | None
+    """
+    When a deleted document's original and parsed text were removed. `null` while they are kept.
+    """
+    created_at: AwareDatetime
+
+
+class DocumentDeleteRequest(NxModel):
+    """
+    `ids` or `filter`, not both.
+    """
+
+    ids: Annotated[list[str] | None, Field(max_length=200, min_length=1)] = None
+    filter: DocumentFilter | None = None
+    expected_count: Annotated[int | None, Field(ge=0)] = None
+    """
+    Required with `filter` unless `dry_run`: the documents you expect it to delete.
+    """
+    dry_run: bool | None = False
+    """
+    Count what would be deleted; delete nothing.
+    """
+
+
+class DocumentDetail(Document):
+    events: list[DocumentEvent]
+
+
+class DocumentList(NxModel):
+    data: list[Document]
+    next_cursor: Cursor
+
+
 class ErrorDetail(NxModel):
     model_config = ConfigDict(
         extra="allow",
@@ -513,6 +726,13 @@ class Job(NxModel):
     documents: int
     status: JobStatus
     progress: Annotated[int, Field(ge=0, le=100)]
+    """
+    Documents ingested (searchable) as a percentage of all of them.
+    """
+    parsed: Annotated[int | None, Field(ge=0)] = None
+    """
+    Documents the parser has finished with (read, or failed to read). A `running` job with `parsed` below `documents` is parsing; one with every document parsed is waiting for the workspace's index to be built.
+    """
     record_types: list[str]
     """
     Distinct record types assigned so far.
@@ -785,7 +1005,11 @@ class ChatMessage(NxModel):
     citations: list[ChatCitation] | None = None
     reasoning: list[ChatReasoningStep] | None = None
     tool_calls: int | None = None
+    usage: TokenUsage | None = None
     cost_usd: float | None = None
+    """
+    What the answer cost: its tokens (tool calls are not billed on their own).
+    """
     created_at: AwareDatetime
 
 
@@ -811,6 +1035,17 @@ class McpServer(NxModel):
     oauth: Oauth
     tools: list[McpTool]
     price_per_1k_calls_usd: float
+    """
+    What 1K calls of the tools other than summarize_records cost.
+    """
+    price_per_1m_input_tokens_usd: float
+    """
+    What 1M language-model input tokens cost (summarize_records).
+    """
+    price_per_1m_output_tokens_usd: float
+    """
+    What 1M language-model output tokens cost.
+    """
 
 
 class SearchResponse(NxModel):

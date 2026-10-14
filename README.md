@@ -2,12 +2,13 @@
 
 [![CI](https://github.com/Nvision-x/nx-saas-platform-api-python/actions/workflows/ci.yml/badge.svg)](https://github.com/Nvision-x/nx-saas-platform-api-python/actions/workflows/ci.yml)
 
-The official Python client for the [NVISIONx Nx Platform](https://platform.us.nvisionx.ai) API. Nx turns the documents in your data
+The official Python client for the [NVISIONx Nx Platform](https://platform.us.nvisionx.ai) API
+([API docs](https://platform.us.nvisionx.ai/docs)). Nx turns the documents in your data
 estate into **business records** (record type, owner, sensitivity, retention), makes them searchable, and exposes them
 to agents.
 
-This library covers the data plane, which is everything an API token can call: ingest, jobs, search, hosted agents,
-chat, data sources, MCP settings, usage and budgets. It ships typed models, sync and async clients, automatic retries,
+This library covers the data plane, which is everything an API token can call: ingest, documents, jobs, search,
+hosted agents, chat, data sources, MCP settings, usage and budgets. It ships typed models, sync and async clients, automatic retries,
 cursor pagination and streaming chat.
 
 ## Install
@@ -90,6 +91,32 @@ if job.status == "completed":
 
 `jobs.wait` returns the job once it is `completed` or `failed`, and raises `JobTimeoutError` if it is neither by the
 timeout.
+
+## Documents
+
+```python
+for doc in nx.documents.list(source_id="src_123", q="msa"):
+    print(doc.name, doc.size, doc.ingest_status)
+
+detail = nx.documents.get("doc_123")
+parsed = nx.documents.parsed("doc_123")
+print(parsed.parser, parsed.page_count, parsed.text[:200])
+
+print(nx.documents.summary())
+```
+
+`documents.parsed` raises `NotFoundError` until the document has been parsed.
+
+Delete one document with `documents.delete`, or up to 200 at once by id. To delete by filter, run a dry run first,
+then send its count back as `expected_count`. If the matching documents change in between, nothing is deleted and the
+call raises `ConflictError`:
+
+```python
+nx.documents.delete_many(ids=["doc_1", "doc_2"])
+
+preview = nx.documents.delete_many(filter={"source_id": "src_123", "q": "draft"}, dry_run=True)
+nx.documents.delete_many(filter={"source_id": "src_123", "q": "draft"}, expected_count=preview.matched)
+```
 
 ## Search
 

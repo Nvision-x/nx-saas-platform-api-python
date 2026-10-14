@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import io
 import json
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
@@ -12,7 +13,7 @@ import respx
 from nvisionx import AsyncNx, JobTimeoutError, NotFoundError, Nx, StreamError
 from nvisionx._base_client import AGENT_TIMEOUT
 from nvisionx.resources import jobs as jobs_module
-from nvisionx.types import BudgetScope, SearchFilters
+from nvisionx.types import BudgetScope, DocumentFilter, SearchFilters
 
 from .conftest import chat_message, conversation, error, job
 
@@ -361,3 +362,110 @@ async def test_async_chat_stream_until_done(async_client: AsyncNx, api: respx.Mo
     stream = await async_client.chat.messages.stream("conv_1", content="Hi")
     message = await stream.until_done()
     assert message.id == "msg_1"
+
+
+def document(**overrides: Any) -> dict[str, Any]:
+    return {
+        "id": "doc_1",
+        "source_id": "src_1",
+        "source_name": "Legal",
+        "source_provider": "sharepoint",
+        "name": "msa.pdf",
+        "path": "/Contracts/msa.pdf",
+        "web_url": None,
+        "mime": "application/pdf",
+        "size": 2048,
+        "version": None,
+        "sha256": None,
+        "metadata": None,
+        "modified_at": None,
+        "created_by": None,
+        "ingest_status": "ingested",
+        "parsed_at": None,
+        "chunk_count": 12,
+        "status": "active",
+        "deleted_at": None,
+        "deleted_reason": None,
+        "data_purged_at": None,
+        "created_at": "2026-10-01T12:00:00Z",
+        **overrides,
+    }
+
+
+def test_documents_list(client: Nx, api: respx.MockRouter) -> None:
+    route = api.get("/v1/documents").mock(
+        side_effect=[
+            httpx.Response(200, json={"data": [document(id="doc_1")], "next_cursor": "c2"}),
+            httpx.Response(200, json={"data": [document(id="doc_2")], "next_cursor": None}),
+        ]
+    )
+    after = datetime(2026, 9, 1, tzinfo=timezone.utc)
+    ids = [d.id for d in client.documents.list(status="all", q="msa", modified_after=after)]
+    assert ids == ["doc_1", "doc_2"]
+    assert route.calls[0].request.url.params == httpx.QueryParams(
+        {"status": "all", "q": "msa", "modified_after": "2026-09-01T00:00:00+00:00"}
+    )
+
+
+def test_documents_get_parsed_summary_delete(client: Nx, api: respx.MockRouter) -> None:
+    added = {"kind": "added", "reason": None, "version": None, "size": 2048, "at": "2026-10-01T12:00:00Z"}
+    api.get("/v1/documents/doc_1").respond(json=document(events=[added]))
+    api.get("/v1/documents/doc_1/parsed").respond(
+        json={
+            "parser": "docling",
+            "parser_version": "2.1",
+            "page_count": 3,
+            "language": "en",
+            "metadata": {"title": "MSA"},
+            "text": "# Master services agreement",
+            "chars": 27,
+            "truncated": False,
+        }
+    )
+    api.get("/v1/documents/summary").respond(
+        json={
+            "documents": 1,
+            "bytes": 2048,
+            "deleted": 0,
+            "purge_pending": 0,
+            "deleted_retention_days": 30,
+            "sources": [],
+        }
+    )
+    delete = api.delete("/v1/documents/doc_1").respond(202, json={"id": "doc_1", "deleted": True})
+
+    assert client.documents.get("doc_1").events[0].kind == "added"
+    assert client.documents.parsed("doc_1").text.startswith("# Master")
+    assert client.documents.summary().deleted_retention_days == 30
+    assert client.documents.delete("doc_1").deleted is True
+    assert delete.calls.last.request.headers["Idempotency-Key"]
+
+
+def test_documents_delete_many(client: Nx, api: respx.MockRouter) -> None:
+    result = {"matched": 4, "deleted": 0, "bytes": 8192, "excluded": 1, "purge_after": "2026-11-01T00:00:00Z"}
+    route = api.post("/v1/documents/delete").respond(json=result)
+
+    preview = client.documents.delete_many(filter=DocumentFilter(source_id="src_1", q="draft"), dry_run=True)
+    assert preview.matched == 4
+    assert body(route) == {"filter": {"source_id": "src_1", "q": "draft"}, "dry_run": True}
+
+    client.documents.delete_many(filter={"source_id": "src_1", "q": "draft"}, expected_count=preview.matched)
+    assert body(route) == {"filter": {"source_id": "src_1", "q": "draft"}, "expected_count": 4}
+
+    client.documents.delete_many(ids=["doc_1", "doc_2"])
+    assert body(route) == {"ids": ["doc_1", "doc_2"]}
+
+
+def test_documents_delete_many_needs_ids_or_filter(client: Nx) -> None:
+    with pytest.raises(TypeError):
+        client.documents.delete_many()
+    with pytest.raises(TypeError):
+        client.documents.delete_many(ids=["doc_1"], filter={})
+
+
+async def test_async_documents(async_client: AsyncNx, api: respx.MockRouter) -> None:
+    api.get("/v1/documents").respond(json={"data": [document()], "next_cursor": None})
+    api.get("/v1/documents/doc_1/parsed").respond(404, json=error("not_found", "Not parsed yet."))
+    assert [d.name async for d in async_client.documents.list()] == ["msa.pdf"]
+    with pytest.raises(NotFoundError):
+        await async_client.documents.parsed("doc_1")
