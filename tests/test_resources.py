@@ -136,7 +136,9 @@ def test_list_paginates(client: Nx, api: respx.MockRouter) -> None:
 
 
 def test_search_with_filters_model(client: Nx, api: respx.MockRouter) -> None:
-    route = api.post("/v1/search").respond(json={"took_ms": 4, "total": 0, "results": []})
+    route = api.post("/v1/search").respond(
+        json={"took_ms": 4, "total": 0, "total_is_lower_bound": False, "results": []}
+    )
     client.search("termination", mode="keyword", filters=SearchFilters(record_type=["contract"]))
     assert body(route) == {"query": "termination", "mode": "keyword", "filters": {"record_type": ["contract"]}}
 
@@ -282,7 +284,7 @@ def test_billing_usage_period(client: Nx, api: respx.MockRouter) -> None:
 
 
 async def test_async_search(async_client: AsyncNx, api: respx.MockRouter) -> None:
-    api.post("/v1/search").respond(json={"took_ms": 2, "total": 0, "results": []})
+    api.post("/v1/search").respond(json={"took_ms": 2, "total": 0, "total_is_lower_bound": False, "results": []})
     response = await async_client.search("cap")
     assert response.total == 0
 
@@ -426,6 +428,10 @@ def test_documents_get_parsed_summary_delete(client: Nx, api: respx.MockRouter) 
         json={
             "documents": 1,
             "bytes": 2048,
+            "parsing": 0,
+            "indexing": 0,
+            "searchable": 1,
+            "failed": 0,
             "deleted": 0,
             "purge_pending": 0,
             "deleted_retention_days": 30,
