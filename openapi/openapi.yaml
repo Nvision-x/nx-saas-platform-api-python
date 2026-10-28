@@ -9,6 +9,25 @@ servers:
 security:
 - bearerAuth: []
 paths:
+  /v1/models:
+    parameters:
+    - $ref: '#/components/parameters/WorkspaceHeader'
+    get:
+      tags:
+      - Models
+      operationId: listModels
+      summary: List the language models
+      description: The supported models with what this organization pays for each and whether the workspace may use them,
+        in the workspace's order of preference (allowed models first). Deprecated models still answer but should be moved
+        off.
+      x-required-scope: agent:read
+      responses:
+        '200':
+          description: Models.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ModelList'
   /v1/sources/authorizations:
     parameters:
     - $ref: '#/components/parameters/WorkspaceHeader'
@@ -550,6 +569,11 @@ paths:
         schema:
           type: string
           format: date-time
+      - name: stage
+        in: query
+        description: Only live documents at this stage of the pipeline.
+        schema:
+          $ref: '#/components/schemas/DocumentStage'
       - $ref: '#/components/parameters/Limit'
       - $ref: '#/components/parameters/Cursor'
       responses:
@@ -572,7 +596,43 @@ paths:
 
         business record — type, owner, sensitivity, retention — before it becomes
 
-        searchable. Accepts PDF, DOCX, XLSX, MSG, EML, TXT and images, up to 2 GB each.
+        searchable. Accepts PDF, DOCX, XLSX, MSG, EML, TXT and images: up to 100 files
+
+        per request, up to 2 GB each. More than 100 files is `400` and nothing of the
+
+        request is kept; split larger batches into several requests.
+
+
+        Send an `Idempotency-Key` to retry safely: a retry with the same key within
+
+        24 h returns the original `202` (same job, marked `Idempotent-Replayed: true`)
+
+        without reading the body, storing the files again or billing them again. Only
+
+        a successful response is kept, so a request that failed can be retried with
+
+        the same key.
+
+
+        For a governing-document upload, send the multipart `metadata` part before
+
+        every `file` part. Its JSON object of strings pairs `governing_doc_type`
+
+        (an uploadable registry id) with `governing_doc_source: manual`. Optional
+
+        `governing_doc_version` (up to 64 characters), `governing_doc_effective_from`
+
+        and `governing_doc_effective_to` (`YYYY-MM-DD`, ordered from earliest to
+
+        latest) are recorded as supplied values. Each file creates a confirmed,
+
+        uploaded governing document without classification, even with discovery
+
+        off. Other metadata keys without the `governing_doc_` prefix are stored
+
+        with the record as usual. Invalid governing metadata rejects the request
+
+        and removes any originals already stored for it.
 
         '
       x-required-scope: ingest:write
@@ -595,6 +655,13 @@ paths:
       responses:
         '202':
           description: Ingestion job queued.
+          headers:
+            Idempotent-Replayed:
+              description: '`true` when this is the response saved under the request''s Idempotency-Key, not a new job.'
+              schema:
+                type: string
+                enum:
+                - 'true'
           content:
             application/json:
               schema:
@@ -609,6 +676,33 @@ paths:
           $ref: '#/components/responses/NotFound'
         '413':
           description: A file exceeds 2 GB.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        '422':
+          description: 'Invalid governing upload metadata. `error.reason` is
+
+            `governing_metadata_incomplete` when type and source are not both
+
+            present or both absent; `governing_source_invalid` when source is not
+
+            `manual`; `governing_type_invalid` for an unknown registry id;
+
+            `governing_type_not_uploadable` for a type that cannot be uploaded; or
+
+            `governing_field_invalid` for an invalid date, reversed date interval
+
+            or version longer than 64 characters. No uploaded originals are kept.
+
+            '
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        '503':
+          description: The governing type registry could not be obtained (`error.reason` is `governing_types_unavailable`).
+            No uploaded originals are kept; retry when the registry is available.
           content:
             application/json:
               schema:
@@ -682,6 +776,60 @@ paths:
           $ref: '#/components/responses/Forbidden'
         '409':
           $ref: '#/components/responses/Conflict'
+  /v1/documents/reparse:
+    parameters:
+    - $ref: '#/components/parameters/WorkspaceHeader'
+    post:
+      tags:
+      - Data
+      operationId: reparseDocuments
+      summary: Re-parse failed documents
+      description: 'Reads failed documents again from their stored originals, so a parser fix reaches documents that failed
+
+        before it without uploading them again. Takes up to 200 document ids, or a filter that matches failed live
+
+        documents only (its `stage` is ignored). Ids of documents that are not failed are skipped. A filter must
+
+        send `expected_count`, which is the `matched` of a `dry_run` with the same filter. When the matching
+
+        documents have changed since then, nothing is queued and the answer is 409. A filter re-parses at most
+
+        10,000 documents at a time; more than that is a 400. Queued documents are `parsing` until the parser
+
+        finishes. A document that fails again keeps its new reason.
+
+        '
+      x-required-permission: ingest_search:full
+      x-required-scope: ingest:write
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/DocumentReparseRequest'
+            example:
+              filter:
+                source_id: src_01J8Z
+              dry_run: true
+      responses:
+        '200':
+          description: What was (or with `dry_run` would be) queued.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/DocumentReparseResult'
+        '400':
+          $ref: '#/components/responses/InvalidRequest'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '409':
+          $ref: '#/components/responses/Conflict'
+        '503':
+          description: Re-parsing is not available in this deployment.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
   /v1/documents/{document_id}/parsed:
     parameters:
     - $ref: '#/components/parameters/WorkspaceHeader'
@@ -789,6 +937,36 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/JobList'
+  /v1/jobs/summary:
+    parameters:
+    - $ref: '#/components/parameters/WorkspaceHeader'
+    get:
+      tags:
+      - Ingest
+      operationId: getJobSummary
+      summary: Summarize ingestion
+      description: 'Jobs by status, the documents still in the pipeline, and how many documents were added, parsed and made
+
+        searchable in each of the last 24 hours. Limited to the sources your token can read.
+
+
+        `indexing` and `search_upgrade` report work on the whole workspace (not limited to your sources): an update
+
+        of the search index, and an upgrade of the workspace''s search. Each is `null` when none ran in the last
+
+        24 hours. While one is `running`, new documents may not be searchable yet (`indexing`) or some results may be
+
+        incomplete (`search_upgrade`). Progress is reported about every 30 seconds.
+
+        '
+      x-required-scope: ingest:read
+      responses:
+        '200':
+          description: Summary.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/JobSummary'
   /v1/jobs/{job_id}:
     parameters:
     - $ref: '#/components/parameters/WorkspaceHeader'
@@ -823,8 +1001,11 @@ paths:
       - Search
       operationId: search
       summary: Search records
-      description: Hybrid keyword + semantic search across the workspace, limited to the sources your token can read. Results
-        carry business context, not just text matches.
+      description: 'Search across the workspace, limited to the sources your token can read, in one of four modes: `hybrid`
+        (the default), `semantic`, `keyword` or `regex`. Results carry business context, not just text matches. A `regex`
+        pattern RE2 cannot compile, or one that matches empty text, is a 400 on `query` saying why. Results come in pages
+        of documents in every mode, one result a document: `total` counts the documents available over all pages, and `next_cursor`
+        fetches the next `limit` of them. Each page runs the search again, so documents changed between pages may move.'
       x-required-scope: search:read
       x-meter: search
       requestBody:
@@ -833,10 +1014,22 @@ paths:
           application/json:
             schema:
               $ref: '#/components/schemas/SearchRequest'
-            example:
-              query: indemnification cap in vendor contracts
-              mode: hybrid
-              limit: 5
+            examples:
+              hybrid:
+                value:
+                  query: indemnification cap in vendor contracts
+                  mode: hybrid
+                  limit: 5
+              regex:
+                value:
+                  query: INV-\d{4,}
+                  mode: regex
+                  regex:
+                    case_sensitive: true
+                    fields:
+                    - text
+                    - filename
+                  limit: 10
       responses:
         '200':
           description: Ranked results.
@@ -854,6 +1047,738 @@ paths:
           $ref: '#/components/responses/Forbidden'
         '429':
           $ref: '#/components/responses/RateLimited'
+  /v1/process-map/status:
+    parameters:
+    - $ref: '#/components/parameters/WorkspaceHeader'
+    get:
+      tags:
+      - Process map
+      operationId: getProcessMapStatus
+      summary: Get Process Map availability
+      description: Whether Process Map can be used in this workspace and which parts are available. Never calls a language
+        model.
+      x-required-permission: ingest_search:view
+      x-required-scope: ingest:read
+      responses:
+        '200':
+          description: Availability.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ProcessMapStatus'
+        '401':
+          $ref: '#/components/responses/Unauthenticated'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+  /v1/process-map/entities:
+    parameters:
+    - $ref: '#/components/parameters/WorkspaceHeader'
+    get:
+      tags:
+      - Process map
+      operationId: searchProcessEntities
+      summary: Search registered entities
+      description: Registered entities whose name or alias contains `query`, ordered by name. An empty query lists every entity.
+        A cursor from another index build answers `409` with reason `stale_cursor`.
+      x-required-permission: ingest_search:view
+      x-required-scope: ingest:read
+      parameters:
+      - name: query
+        in: query
+        schema:
+          type: string
+          maxLength: 200
+          default: ''
+      - name: kind
+        in: query
+        schema:
+          type: string
+          maxLength: 64
+      - $ref: '#/components/parameters/Cursor'
+      - $ref: '#/components/parameters/Limit'
+      responses:
+        '200':
+          description: Entities.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ProcessEntityPage'
+        '400':
+          $ref: '#/components/responses/InvalidRequest'
+        '401':
+          $ref: '#/components/responses/Unauthenticated'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '409':
+          $ref: '#/components/responses/Conflict'
+        '503':
+          $ref: '#/components/responses/ProcessMapUnavailable'
+  /v1/process-map/entities/{entity_id}:
+    parameters:
+    - $ref: '#/components/parameters/WorkspaceHeader'
+    - $ref: '#/components/parameters/ProcessEntityId'
+    get:
+      tags:
+      - Process map
+      operationId: getProcessEntity
+      summary: Get an entity
+      description: The entity with every alias and its review decision. Alias evidence is included only when you can read
+        its document.
+      x-required-permission: ingest_search:view
+      x-required-scope: ingest:read
+      responses:
+        '200':
+          description: Entity.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ProcessEntity'
+        '401':
+          $ref: '#/components/responses/Unauthenticated'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '503':
+          $ref: '#/components/responses/ProcessMapUnavailable'
+  /v1/process-map/entities/{entity_id}/documents:
+    parameters:
+    - $ref: '#/components/parameters/WorkspaceHeader'
+    - $ref: '#/components/parameters/ProcessEntityId'
+    get:
+      tags:
+      - Process map
+      operationId: listProcessEntityDocuments
+      summary: List an entity's file
+      description: Documents linked to the entity that you can read, grouped by section, with link level, review decision
+        and mentions. Coverage and section counts describe the whole file.
+      x-required-permission: ingest_search:view
+      x-required-scope: ingest:read
+      parameters:
+      - $ref: '#/components/parameters/Cursor'
+      - $ref: '#/components/parameters/Limit'
+      responses:
+        '200':
+          description: One page of the file.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ProcessEntityFilePage'
+        '400':
+          $ref: '#/components/responses/InvalidRequest'
+        '401':
+          $ref: '#/components/responses/Unauthenticated'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '409':
+          $ref: '#/components/responses/Conflict'
+        '503':
+          $ref: '#/components/responses/ProcessMapUnavailable'
+  /v1/process-map/documents:
+    parameters:
+    - $ref: '#/components/parameters/WorkspaceHeader'
+    get:
+      tags:
+      - Process map
+      operationId: searchProcessDocuments
+      summary: Find workspace documents to add to a file
+      description: Documents you can read whose title, file name or path contains `query`, with their membership in `entity_id`'s
+        file.
+      x-required-permission: ingest_search:view
+      x-required-scope: ingest:read
+      parameters:
+      - name: query
+        in: query
+        required: true
+        schema:
+          type: string
+          minLength: 1
+          maxLength: 200
+      - name: entity_id
+        in: query
+        schema:
+          type: string
+          maxLength: 200
+      - $ref: '#/components/parameters/Cursor'
+      - name: limit
+        in: query
+        schema:
+          type: integer
+          minimum: 1
+          maximum: 50
+          default: 20
+      responses:
+        '200':
+          description: Documents.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ProcessWorkspaceDocumentPage'
+        '400':
+          $ref: '#/components/responses/InvalidRequest'
+        '401':
+          $ref: '#/components/responses/Unauthenticated'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '409':
+          $ref: '#/components/responses/Conflict'
+        '503':
+          $ref: '#/components/responses/ProcessMapUnavailable'
+  /v1/process-map/documents/{doc_id}/text:
+    parameters:
+    - $ref: '#/components/parameters/WorkspaceHeader'
+    - name: doc_id
+      in: path
+      required: true
+      schema:
+        type: string
+        maxLength: 512
+    get:
+      tags:
+      - Process map
+      operationId: getProcessDocumentText
+      summary: Get a document's text
+      description: The text that assessments read, as plain text, with offsets in Unicode code points. `text` holds at most
+        the first 1,000,000 code points; `text_sha256` identifies the complete text.
+      x-required-permission: ingest_search:view
+      x-required-scope: ingest:read
+      responses:
+        '200':
+          description: Text.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ProcessDocumentText'
+        '401':
+          $ref: '#/components/responses/Unauthenticated'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '409':
+          $ref: '#/components/responses/Conflict'
+        '503':
+          $ref: '#/components/responses/ProcessMapUnavailable'
+  /v1/process-map/policies:
+    parameters:
+    - $ref: '#/components/parameters/WorkspaceHeader'
+    get:
+      tags:
+      - Process map
+      operationId: listProcessPolicies
+      summary: List policies
+      description: Policies that assessments can check. With `entity_id`, `applicable` says whether each applies to that entity's
+        kind.
+      x-required-permission: ingest_search:view
+      x-required-scope: ingest:read
+      parameters:
+      - name: entity_id
+        in: query
+        schema:
+          type: string
+          maxLength: 200
+      responses:
+        '200':
+          description: Policies.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ProcessPolicyList'
+        '401':
+          $ref: '#/components/responses/Unauthenticated'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '503':
+          $ref: '#/components/responses/ProcessMapUnavailable'
+  /v1/process-map/entities/{entity_id}/policies/{policy_id}/versions/{version}/preview:
+    parameters:
+    - $ref: '#/components/parameters/WorkspaceHeader'
+    - $ref: '#/components/parameters/ProcessEntityId'
+    - $ref: '#/components/parameters/ProcessPolicyId'
+    - $ref: '#/components/parameters/ProcessPolicyVersion'
+    get:
+      tags:
+      - Process map
+      operationId: getProcessPolicyPreview
+      summary: Preview a policy's steps
+      description: The policy's steps when they have been read already. Never calls a language model; steps are read during
+        the first assessment.
+      x-required-permission: ingest_search:view
+      x-required-scope: ingest:read
+      responses:
+        '200':
+          description: Preview.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ProcessPolicyPreview'
+        '401':
+          $ref: '#/components/responses/Unauthenticated'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '503':
+          $ref: '#/components/responses/ProcessMapUnavailable'
+      parameters:
+      - name: policy_source
+        in: query
+        schema:
+          type: string
+          enum:
+          - catalog
+          - workspace_document
+          default: catalog
+      - name: governing_document_id
+        in: query
+        schema:
+          type: string
+          maxLength: 64
+  /v1/process-map/entities/{entity_id}/policies/{policy_id}/versions/{version}/input:
+    parameters:
+    - $ref: '#/components/parameters/WorkspaceHeader'
+    - $ref: '#/components/parameters/ProcessEntityId'
+    - $ref: '#/components/parameters/ProcessPolicyId'
+    - $ref: '#/components/parameters/ProcessPolicyVersion'
+    get:
+      tags:
+      - Process map
+      operationId: getProcessAssessmentInput
+      summary: Get what an assessment would read
+      description: The evidence set an assessment of this entity against this policy would read now, its identity and coverage.
+        Confirmed and Likely documents are included; Possible documents are excluded and counted.
+      x-required-permission: ingest_search:view
+      x-required-scope: ingest:read
+      responses:
+        '200':
+          description: Assessment input.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ProcessAssessmentInput'
+        '401':
+          $ref: '#/components/responses/Unauthenticated'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '503':
+          $ref: '#/components/responses/ProcessMapUnavailable'
+      parameters:
+      - name: policy_source
+        in: query
+        schema:
+          type: string
+          enum:
+          - catalog
+          - workspace_document
+          default: catalog
+      - name: governing_document_id
+        in: query
+        schema:
+          type: string
+          maxLength: 64
+  /v1/process-map/entities/{entity_id}/assessments:
+    parameters:
+    - $ref: '#/components/parameters/WorkspaceHeader'
+    - $ref: '#/components/parameters/ProcessEntityId'
+    get:
+      tags:
+      - Process map
+      operationId: listProcessAssessments
+      summary: List assessments
+      description: Assessments of this entity against one policy version, newest first, including failed and cancelled ones.
+        Only assessments made with your current access are listed. `current` marks those whose input still matches.
+      x-required-permission: ingest_search:view
+      x-required-scope: ingest:read
+      parameters:
+      - name: policy_id
+        in: query
+        required: true
+        schema:
+          type: string
+          maxLength: 64
+      - name: version
+        in: query
+        required: true
+        schema:
+          type: string
+          maxLength: 64
+      - $ref: '#/components/parameters/Cursor'
+      - $ref: '#/components/parameters/Limit'
+      - name: policy_source
+        in: query
+        schema:
+          type: string
+          enum:
+          - catalog
+          - workspace_document
+          default: catalog
+      - name: governing_document_id
+        in: query
+        schema:
+          type: string
+          maxLength: 64
+      responses:
+        '200':
+          description: Assessments.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ProcessAssessmentPage'
+        '400':
+          $ref: '#/components/responses/InvalidRequest'
+        '401':
+          $ref: '#/components/responses/Unauthenticated'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '503':
+          $ref: '#/components/responses/ProcessMapUnavailable'
+    post:
+      tags:
+      - Process map
+      operationId: startProcessAssessment
+      summary: Start an assessment
+      description: Assesses the evidence set identified by `snapshot_id` against the policy. `409` with reason `stale_input`
+        when the input changed since you saw it (`current` holds the new identity); `422` with reason `policy_not_applicable`.
+        An identical assessment already queued or running is returned with `200` instead of starting another.
+      x-required-permission: ingest_search:edit
+      x-required-scope: ingest:write
+      x-meter:
+      - llm_input
+      - llm_output
+      parameters:
+      - $ref: '#/components/parameters/IdempotencyKey'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ProcessAssessmentStart'
+      responses:
+        '200':
+          description: An identical assessment is already queued or running.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ProcessAssessment'
+        '202':
+          description: Queued.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ProcessAssessment'
+        '400':
+          $ref: '#/components/responses/InvalidRequest'
+        '401':
+          $ref: '#/components/responses/Unauthenticated'
+        '402':
+          $ref: '#/components/responses/BudgetExceeded'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '409':
+          $ref: '#/components/responses/Conflict'
+        '422':
+          $ref: '#/components/responses/Unprocessable'
+        '429':
+          $ref: '#/components/responses/RateLimited'
+        '503':
+          $ref: '#/components/responses/ProcessMapUnavailable'
+  /v1/process-map/assessments/{assessment_id}:
+    parameters:
+    - $ref: '#/components/parameters/WorkspaceHeader'
+    - $ref: '#/components/parameters/ProcessAssessmentId'
+    get:
+      tags:
+      - Process map
+      operationId: getProcessAssessment
+      summary: Get an assessment
+      description: An assessment with its results. Quotes from documents you can no longer read are withheld; quotes from
+        changed documents are marked `changed`.
+      x-required-permission: ingest_search:view
+      x-required-scope: ingest:read
+      responses:
+        '200':
+          description: Assessment.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ProcessAssessment'
+        '401':
+          $ref: '#/components/responses/Unauthenticated'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '503':
+          $ref: '#/components/responses/ProcessMapUnavailable'
+  /v1/process-map/assessments/{assessment_id}/cancel:
+    parameters:
+    - $ref: '#/components/parameters/WorkspaceHeader'
+    - $ref: '#/components/parameters/ProcessAssessmentId'
+    post:
+      tags:
+      - Process map
+      operationId: cancelProcessAssessment
+      summary: Cancel an assessment
+      description: Stops a queued or running assessment. A finished assessment is returned unchanged.
+      x-required-permission: ingest_search:edit
+      x-required-scope: ingest:write
+      responses:
+        '200':
+          description: Assessment.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ProcessAssessment'
+        '401':
+          $ref: '#/components/responses/Unauthenticated'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+  /v1/governing-document-types:
+    parameters:
+    - $ref: '#/components/parameters/WorkspaceHeader'
+    get:
+      tags:
+      - Governing documents
+      operationId: listGoverningDocumentTypes
+      summary: List governing document types
+      description: The process types a governing document can have, in display order. `uploadable` types can be chosen when
+        uploading.
+      x-required-permission: ingest_search:view
+      x-required-scope: ingest:read
+      responses:
+        '200':
+          description: Types.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/GoverningDocumentTypeList'
+        '401':
+          $ref: '#/components/responses/Unauthenticated'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '503':
+          $ref: '#/components/responses/ProcessMapUnavailable'
+  /v1/governing-documents:
+    parameters:
+    - $ref: '#/components/parameters/WorkspaceHeader'
+    get:
+      tags:
+      - Governing documents
+      operationId: listGoverningDocuments
+      summary: List governing documents
+      description: Governing documents of the workspace that you can read, newest first. Quotes are included only from documents
+        you can read. `active=false` lists documents whose content changed, that you can no longer read, or that discovery
+        found while it is now off.
+      x-required-permission: ingest_search:view
+      x-required-scope: ingest:read
+      parameters:
+      - name: type
+        in: query
+        schema:
+          type: string
+          maxLength: 64
+      - name: kind
+        in: query
+        description: Lists only documents whose governing type has this kind in the type registry. `target` types govern a
+          process; `catch_all` types do not.
+        schema:
+          type: string
+          enum:
+          - target
+          - catch_all
+      - name: status
+        in: query
+        schema:
+          type: string
+          enum:
+          - proposed
+          - confirmed
+          - rejected
+      - name: source
+        in: query
+        schema:
+          type: string
+          enum:
+          - discovered
+          - uploaded
+      - name: active
+        in: query
+        schema:
+          type: boolean
+          default: true
+      - $ref: '#/components/parameters/Cursor'
+      - $ref: '#/components/parameters/Limit'
+      responses:
+        '200':
+          description: Governing documents.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/GoverningDocumentPage'
+        '400':
+          $ref: '#/components/responses/InvalidRequest'
+        '401':
+          $ref: '#/components/responses/Unauthenticated'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '503':
+          $ref: '#/components/responses/ProcessMapUnavailable'
+  /v1/governing-documents/discovery:
+    parameters:
+    - $ref: '#/components/parameters/WorkspaceHeader'
+    get:
+      tags:
+      - Governing documents
+      operationId: getGoverningDiscovery
+      summary: Get governing document discovery
+      description: Whether discovery is on for this workspace, whether it can run, and its latest and active runs. Never calls
+        a language model.
+      x-required-permission: ingest_search:view
+      x-required-scope: ingest:read
+      responses:
+        '200':
+          description: Discovery.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/GoverningDiscovery'
+        '401':
+          $ref: '#/components/responses/Unauthenticated'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+  /v1/governing-documents/discovery/runs:
+    parameters:
+    - $ref: '#/components/parameters/WorkspaceHeader'
+    post:
+      tags:
+      - Governing documents
+      operationId: startGoverningDiscovery
+      summary: Search for governing documents
+      description: Searches the workspace for the documents that govern each process type and proposes them for review. A
+        search already queued is returned with `200`. `409` with reason `discovery_disabled` when discovery is off.
+      x-required-permission: ingest_search:edit
+      x-required-scope: ingest:write
+      x-meter:
+      - llm_input
+      - llm_output
+      parameters:
+      - $ref: '#/components/parameters/IdempotencyKey'
+      responses:
+        '200':
+          description: A search is already queued.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/GoverningDiscoveryRun'
+        '202':
+          description: Queued.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/GoverningDiscoveryRun'
+        '401':
+          $ref: '#/components/responses/Unauthenticated'
+        '402':
+          $ref: '#/components/responses/BudgetExceeded'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '409':
+          $ref: '#/components/responses/Conflict'
+        '503':
+          $ref: '#/components/responses/ProcessMapUnavailable'
+  /v1/search/compare:
+    parameters:
+    - $ref: '#/components/parameters/WorkspaceHeader'
+    post:
+      tags:
+      - Search
+      operationId: compareSearch
+      summary: Compare search engines
+      description: "Run one search on two search engines and get both rankings side by side, to evaluate search quality on\
+        \ your\nown queries.\n\n- `baseline` is the current search engine, which answers this workspace's searches until the\
+        \ workspace is\n  upgraded to the next-generation engine.\n- `candidate` is the next-generation search engine being\
+        \ evaluated.\n\nOnce a workspace uses only the next-generation engine, it has no baseline: `baseline` is `unavailable`\n\
+        (\"This workspace now uses only the next-generation search engine.\") and `candidate` answers.\n\nThe body is a `search`\
+        \ body without `cursor`, checked the same way (modes, regex rules, `limit`). Each side's\n`results` are built exactly\
+        \ as `search` builds them: one result per document, with the same ids, snippets,\nhighlights and scores, and limited\
+        \ to the sources and access of your token (and to `sources`, when given).\nIn `regex` mode each side is one page (its\
+        \ first `limit` documents). `overlap`, `only_baseline` and\n`only_candidate` compare the two sides by result `id`.\n\
+        \nA side that fails or is too slow reports `error` (with empty `results`), and the other side's results are\nstill\
+        \ returned: `timeout` (it did not answer within about 20 seconds, 45 in `regex` mode), `unavailable`\n(the engine\
+        \ cannot answer for this workspace: the next-generation engine is not available for it, the\ncurrent engine is still\
+        \ starting up, or the workspace now uses only the next-generation engine) or `failed`\n(anything else).\n\nThe call\
+        \ always answers within about a minute. If neither engine's answer arrives in time, it is a `504`\n(`internal_error`,\
+        \ `reason` `timeout`) and is not billed: try again shortly.\n\nBilled as one `search` call of the same mode (one query\
+        \ on the `search` meter), whatever either side\nreturns. Budgets and rate limits apply as they do to `search`. A workspace\
+        \ with nothing indexed yet is a 409\nand is not billed.\n"
+      x-required-scope: search:compare
+      x-meter: search
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/SearchCompareRequest'
+            examples:
+              hybrid:
+                value:
+                  query: indemnification cap in vendor contracts
+                  mode: hybrid
+                  limit: 10
+              regex:
+                value:
+                  query: INV-\d{4,}
+                  mode: regex
+                  regex:
+                    case_sensitive: true
+                    fields:
+                    - text
+                    - filename
+                  limit: 10
+      responses:
+        '200':
+          description: Both rankings.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SearchCompareResponse'
+        '400':
+          $ref: '#/components/responses/InvalidRequest'
+        '401':
+          $ref: '#/components/responses/Unauthenticated'
+        '402':
+          $ref: '#/components/responses/BudgetExceeded'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '409':
+          $ref: '#/components/responses/Conflict'
+        '429':
+          $ref: '#/components/responses/RateLimited'
+        '504':
+          description: The search engines did not answer in time. Not billed.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+              example:
+                error:
+                  type: internal_error
+                  message: The search engines did not answer in time. Try again shortly.
+                  reason: timeout
   /v1/mcp:
     parameters:
     - $ref: '#/components/parameters/WorkspaceHeader'
@@ -1262,6 +2187,36 @@ components:
         minimum: 1
         maximum: 100
         default: 50
+    ProcessAssessmentId:
+      name: assessment_id
+      in: path
+      required: true
+      schema:
+        type: string
+        maxLength: 64
+        examples:
+        - pas_01k6c1x0d8f9g2h3j4k5m6n7p8
+    ProcessEntityId:
+      name: entity_id
+      in: path
+      required: true
+      schema:
+        type: string
+        maxLength: 200
+    ProcessPolicyId:
+      name: policy_id
+      in: path
+      required: true
+      schema:
+        type: string
+        maxLength: 64
+    ProcessPolicyVersion:
+      name: version
+      in: path
+      required: true
+      schema:
+        type: string
+        maxLength: 64
     SourceId:
       name: source_id
       in: path
@@ -1355,6 +2310,13 @@ components:
             error:
               type: not_found
               message: No source src_9 in ws_acme.
+    ProcessMapUnavailable:
+      description: 'The knowledge hub cannot serve this request now. `reason` says why when known: `entity_index_unavailable`,
+        `registry_unavailable`, `document_text_unavailable`, `capacity` (with `Retry-After`).'
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/Error'
     RateLimited:
       description: Too many requests. Retry after `Retry-After` seconds.
       headers:
@@ -1803,9 +2765,24 @@ components:
           type: integer
         usage:
           $ref: '#/components/schemas/TokenUsage'
+        model:
+          type:
+          - string
+          - 'null'
+          description: The model that wrote the answer (its name).
+        notices:
+          type: array
+          items:
+            $ref: '#/components/schemas/ChatNotice'
+          description: What the user should know about how the answer was produced, in order (empty when nothing happened).
         cost_usd:
           type: number
           description: 'What the answer cost: its tokens (tool calls are not billed on their own).'
+        duration_ms:
+          type:
+          - integer
+          - 'null'
+          description: How long the answer took, in milliseconds. `null` on answers stored before it was recorded.
         created_at:
           type: string
           format: date-time
@@ -1818,15 +2795,51 @@ components:
           type: string
           minLength: 1
           maxLength: 8000
+    ChatNotice:
+      type: object
+      description: 'Something about how an answer was produced that the user should be told. `capacity_wait`: our service
+        hit a capacity limit with its AI model provider and the answer waited before retrying. `fallback`: the answer used
+        a different model than usual because the first choice was unavailable. `degraded`: no model could write the answer
+        (a capacity limit, or the provider unavailable), so it lists the most relevant passages instead.'
+      required:
+      - kind
+      - message
+      properties:
+        kind:
+          type: string
+          enum:
+          - capacity_wait
+          - fallback
+          - degraded
+        message:
+          type: string
+          description: To show the user as is.
+        attempt:
+          type:
+          - integer
+          - 'null'
+          description: '`capacity_wait`: which retry this was.'
+        of:
+          type:
+          - integer
+          - 'null'
+          description: '`capacity_wait`: how many retries there are at most.'
+        wait_s:
+          type:
+          - integer
+          - 'null'
+          description: '`capacity_wait`: seconds waited before the retry.'
     ChatReasoningStep:
       type: object
       required:
       - summary
+      description: One step of how an answer was made, in order. Messages stored before steps were timed have only `summary`
+        (and `tool`).
       properties:
         summary:
           type: string
           examples:
-          - Searched vendor contracts for indemnity caps
+          - 'Pass 2: searched 3 new queries, 12 new passages'
         detail:
           type:
           - string
@@ -1835,19 +2848,43 @@ components:
           oneOf:
           - $ref: '#/components/schemas/McpToolName'
           - type: 'null'
+          description: 'The tool the step called: `search_records` for a search, `get_record` for reading a whole record.
+            `null` for understanding the question and writing the answer.'
+        kind:
+          type: string
+          enum:
+          - route
+          - search
+          - read
+          - answer
+          description: '`route`: understanding the question · `search`: one search pass · `read`: reading a whole record ·
+            `answer`: writing and checking the answer after the last tool call.'
+        at_ms:
+          type: integer
+          description: When the step started, in milliseconds from the start of the answer.
+        duration_ms:
+          type: integer
+          description: How long the step took, in milliseconds.
+        queries:
+          type: array
+          items:
+            type: string
+          description: The searches a `search` step ran, as plain text.
     ChatStreamEvent:
       type: object
       required:
       - type
       description: 'One server-sent event of `sendChatMessage`. `status`: what the agent is doing now · `step`: a finished
-        reasoning step · `delta`: answer text to append · `complete`: the stored assistant message · `error`: the answer failed
-        (nothing is billed for an answer that never started).'
+        reasoning step · `notice`: something the user should be told now, such as our service hitting a capacity limit with
+        its AI model provider and waiting to retry · `delta`: answer text to append · `complete`: the stored assistant message
+        · `error`: the answer failed (nothing is billed for an answer that never started).'
       properties:
         type:
           type: string
           enum:
           - status
           - step
+          - notice
           - delta
           - complete
           - error
@@ -1855,12 +2892,20 @@ components:
           type: string
         step:
           $ref: '#/components/schemas/ChatReasoningStep'
+        notice:
+          $ref: '#/components/schemas/ChatNotice'
         text:
           type: string
         message:
           $ref: '#/components/schemas/ChatMessage'
         error:
           type: string
+        code:
+          type: string
+          enum:
+          - capacity
+          description: 'On `error`, why when it is known: `capacity` means our service hit a capacity limit with its AI model
+            provider; trying again in a minute usually works.'
     Classification:
       type: object
       required:
@@ -2004,6 +3049,14 @@ components:
           - pending
           - ingested
           - failed
+        ingest_error:
+          type:
+          - string
+          - 'null'
+          description: 'Why the document could not be ingested, in words for the person who sent it: set when `ingest_status`
+            is `failed`, else `null`.'
+          examples:
+          - The file is larger than 2 GB.
         parsed_at:
           type:
           - string
@@ -2153,6 +3206,8 @@ components:
         modified_before:
           type: string
           format: date-time
+        stage:
+          $ref: '#/components/schemas/DocumentStage'
     DocumentList:
       type: object
       required:
@@ -2204,6 +3259,39 @@ components:
         truncated:
           type: boolean
           description: '`text` holds only the first 1 MB.'
+    DocumentReparseRequest:
+      type: object
+      description: '`ids` or `filter`, not both.'
+      properties:
+        ids:
+          type: array
+          items:
+            type: string
+          minItems: 1
+          maxItems: 200
+          uniqueItems: true
+        filter:
+          $ref: '#/components/schemas/DocumentFilter'
+        expected_count:
+          type: integer
+          minimum: 0
+          description: 'Required with `filter` unless `dry_run`: the failed documents you expect it to re-parse.'
+        dry_run:
+          type: boolean
+          default: false
+          description: Count what would be re-parsed; queue nothing.
+    DocumentReparseResult:
+      type: object
+      required:
+      - matched
+      - queued
+      properties:
+        matched:
+          type: integer
+          description: Failed live documents matched.
+        queued:
+          type: integer
+          description: Documents queued to be parsed again (0 with dry_run).
     DocumentSourceSummary:
       type: object
       required:
@@ -2214,6 +3302,10 @@ components:
       - bytes
       - deleted
       - purge_pending
+      - parsing
+      - indexing
+      - searchable
+      - failed
       properties:
         source_id:
           type: string
@@ -2224,6 +3316,18 @@ components:
         documents:
           type: integer
           description: Live documents.
+        parsing:
+          type: integer
+          description: Live documents waiting for the parser.
+        indexing:
+          type: integer
+          description: Live documents read, waiting for the index build.
+        searchable:
+          type: integer
+          description: Live documents an index holds.
+        failed:
+          type: integer
+          description: Live documents that could not be read or indexed.
         bytes:
           type: integer
           format: int64
@@ -2234,6 +3338,15 @@ components:
         purge_pending:
           type: integer
           description: Deleted documents whose data is not removed yet.
+    DocumentStage:
+      type: string
+      enum:
+      - parsing
+      - indexing
+      - searchable
+      - failed
+      description: '`parsing`: waiting for the parser. `indexing`: read, waiting for the index build. `searchable`: an index
+        holds it. `failed`: it could not be read or indexed.'
     DocumentStatus:
       type: string
       enum:
@@ -2253,10 +3366,22 @@ components:
       - bytes
       - deleted
       - purge_pending
+      - parsing
+      - indexing
+      - searchable
+      - failed
       - deleted_retention_days
       - sources
       properties:
         documents:
+          type: integer
+        parsing:
+          type: integer
+        indexing:
+          type: integer
+        searchable:
+          type: integer
+        failed:
           type: integer
         bytes:
           type: integer
@@ -2304,6 +3429,16 @@ components:
             resolve:
               type: string
               description: How to recover.
+            reason:
+              type: string
+              description: 'Why a service was unavailable, when known: `capacity` means our service hit a capacity limit with
+                its AI model provider (Retry-After says when to try again). Process Map reasons: `entity_index_unavailable`,
+                `registry_unavailable`, `document_text_unavailable`, `policy_unavailable`, `stale_cursor`, `registry_conflict`,
+                `content_changed`, `stale_input`, `policy_not_applicable` and `capacity`; invalid link changes use `already_in_file`,
+                `not_in_file` or `invalid_reason`. Other validation failures use the returned detail. Governing document reasons:
+                `discovery_disabled`, `governing_conflict`, `governing_type_invalid`, `governing_type_not_uploadable`, `governing_source_invalid`,
+                `governing_metadata_incomplete`, `governing_field_invalid`, `governing_transition_invalid`, `governing_types_unavailable`,
+                `policy_ambiguous`, `policy_content_changed`, `registry_unavailable`.'
             balance_usd:
               type: number
               description: The organization balance (insufficient_balance).
@@ -2366,6 +3501,573 @@ components:
         shared_items:
           type: integer
           description: Items shared beyond their site or owner.
+    GoverningActor:
+      type: object
+      required:
+      - type
+      - id
+      - name
+      properties:
+        type:
+          type: string
+          enum:
+          - system
+          - user
+          - token
+        id:
+          type: string
+        name:
+          type:
+          - string
+          - 'null'
+    GoverningAlternative:
+      type: object
+      required:
+      - governing_document_id
+      - doc_id
+      - title
+      - version
+      - effective_from
+      - effective_to
+      - source
+      - status
+      properties:
+        governing_document_id:
+          type: string
+        doc_id:
+          type: string
+        title:
+          type: string
+        version:
+          type:
+          - string
+          - 'null'
+        effective_from:
+          type:
+          - string
+          - 'null'
+          format: date
+        effective_to:
+          type:
+          - string
+          - 'null'
+          format: date
+        source:
+          type: string
+          enum:
+          - discovered
+          - uploaded
+        status:
+          type: string
+          enum:
+          - proposed
+          - confirmed
+    GoverningDiscovery:
+      type: object
+      required:
+      - enabled
+      - available
+      - unavailable_reason
+      - can_change
+      - latest_run
+      - active_run
+      properties:
+        enabled:
+          type: boolean
+        available:
+          type: boolean
+        unavailable_reason:
+          type:
+          - string
+          - 'null'
+          enum:
+          - classifier_unavailable
+          - registry_unavailable
+          - knowledge_hub_unavailable
+          - null
+        can_change:
+          type: boolean
+          description: Whether you can turn discovery on or off.
+        latest_run:
+          oneOf:
+          - $ref: '#/components/schemas/GoverningDiscoveryRun'
+          - type: 'null'
+        active_run:
+          oneOf:
+          - $ref: '#/components/schemas/GoverningDiscoveryRun'
+          - type: 'null'
+    GoverningDiscoveryRun:
+      type: object
+      required:
+      - id
+      - trigger
+      - status
+      - phase
+      - progress
+      - counts
+      - failure
+      - cancel_reason
+      - build_id
+      - registry_version
+      - requested_by
+      - created_at
+      - started_at
+      - finished_at
+      properties:
+        id:
+          type: string
+          examples:
+          - gdr_01k6c1x0d8f9g2h3j4k5m6n7p8
+        trigger:
+          type: string
+          enum:
+          - build
+          - new_documents
+          - request
+        status:
+          type: string
+          enum:
+          - queued
+          - running
+          - completed
+          - failed
+          - cancelled
+        phase:
+          type: string
+        progress:
+          type: object
+          required:
+          - done
+          - total
+          properties:
+            done:
+              type: integer
+            total:
+              type: integer
+        counts:
+          type: object
+          required:
+          - queries
+          - candidates
+          - classified
+          - cache_hits
+          - skipped_uploaded
+          - skipped_decided
+          - unresolved
+          - discarded
+          - proposals
+          properties:
+            queries:
+              type: integer
+            candidates:
+              type: integer
+            classified:
+              type: integer
+            cache_hits:
+              type: integer
+            skipped_uploaded:
+              type: integer
+            skipped_decided:
+              type: integer
+            unresolved:
+              type: integer
+            discarded:
+              type: integer
+            proposals:
+              type: integer
+        failure:
+          oneOf:
+          - type: object
+            required:
+            - code
+            - message
+            properties:
+              code:
+                type: string
+              message:
+                type: string
+          - type: 'null'
+        cancel_reason:
+          type:
+          - string
+          - 'null'
+          enum:
+          - discovery_disabled
+          - superseded
+          - null
+        build_id:
+          type:
+          - string
+          - 'null'
+        registry_version:
+          type:
+          - integer
+          - 'null'
+        requested_by:
+          oneOf:
+          - $ref: '#/components/schemas/GoverningActor'
+          - type: 'null'
+        created_at:
+          type: string
+          format: date-time
+        started_at:
+          type:
+          - string
+          - 'null'
+          format: date-time
+        finished_at:
+          type:
+          - string
+          - 'null'
+          format: date-time
+    GoverningDocument:
+      type: object
+      required:
+      - id
+      - governing_type
+      - type_origin
+      - status
+      - source
+      - active
+      - inactive_reason
+      - eligibility
+      - document
+      - title
+      - version
+      - effective_from
+      - effective_to
+      - supersedes
+      - approval
+      - owner
+      - confidence
+      - review_signal
+      - review_reasons
+      - type_quote
+      - embedded_roles
+      - reading
+      - revision
+      - registry_version
+      - created_at
+      - created_by
+      - decided_at
+      - decided_by
+      properties:
+        id:
+          type: string
+          examples:
+          - gdoc_01k6c1x0d8f9g2h3j4k5m6n7p8
+        governing_type:
+          type: string
+        type_origin:
+          type: string
+          enum:
+          - classifier
+          - uploader
+          - reviewer
+        status:
+          type: string
+          enum:
+          - proposed
+          - confirmed
+          - rejected
+        source:
+          type: string
+          enum:
+          - discovered
+          - uploaded
+        active:
+          type: boolean
+        inactive_reason:
+          type:
+          - string
+          - 'null'
+          enum:
+          - text_pending
+          - content_changed
+          - document_unreadable
+          - discovery_off
+          - null
+          description: '`text_pending`: an uploaded document that is not searchable yet.'
+        eligibility:
+          type: object
+          required:
+          - state
+          - reasons
+          properties:
+            state:
+              type: string
+              enum:
+              - eligible
+              - ineligible
+            reasons:
+              type: array
+              items:
+                type: string
+        document:
+          type: object
+          required:
+          - doc_id
+          - document_id
+          - content_version
+          - filename
+          - access
+          properties:
+            doc_id:
+              type:
+              - string
+              - 'null'
+              description: The knowledge hub document id, used to open the text.
+            document_id:
+              type:
+              - string
+              - 'null'
+            content_version:
+              type: string
+            filename:
+              type:
+              - string
+              - 'null'
+            access:
+              type: string
+              enum:
+              - readable
+              - withheld
+        title:
+          $ref: '#/components/schemas/GoverningField'
+        version:
+          $ref: '#/components/schemas/GoverningField'
+        effective_from:
+          $ref: '#/components/schemas/GoverningField'
+        effective_to:
+          $ref: '#/components/schemas/GoverningField'
+        supersedes:
+          $ref: '#/components/schemas/GoverningField'
+        approval:
+          $ref: '#/components/schemas/GoverningField'
+        owner:
+          $ref: '#/components/schemas/GoverningField'
+        confidence:
+          type:
+          - string
+          - 'null'
+          enum:
+          - high
+          - medium
+          - low
+          - null
+          description: The classifier's own rating; not a probability.
+        review_signal:
+          type:
+          - string
+          - 'null'
+          enum:
+          - ready
+          - needs_review
+          - not_selectable
+          - null
+          description: Null for uploaded documents. Candidates whose classification is unresolved have no row; they are counted
+            on the discovery run.
+        review_reasons:
+          type: array
+          items:
+            type: string
+        type_quote:
+          oneOf:
+          - $ref: '#/components/schemas/GoverningQuote'
+          - type: 'null'
+        embedded_roles:
+          type: array
+          items:
+            type: object
+            required:
+            - type
+            - quote
+            properties:
+              type:
+                type: string
+              quote:
+                $ref: '#/components/schemas/GoverningQuote'
+        reading:
+          oneOf:
+          - type: object
+            required:
+            - mode
+            - truncated
+            - supplied_chars
+            - total_chars
+            properties:
+              mode:
+                type: string
+                enum:
+                - full
+                - excerpts
+              truncated:
+                type: boolean
+              supplied_chars:
+                type: integer
+              total_chars:
+                type: integer
+          - type: 'null'
+        revision:
+          type: integer
+        registry_version:
+          type: integer
+        created_at:
+          type: string
+          format: date-time
+        created_by:
+          $ref: '#/components/schemas/GoverningActor'
+        decided_at:
+          type:
+          - string
+          - 'null'
+          format: date-time
+        decided_by:
+          oneOf:
+          - $ref: '#/components/schemas/GoverningActor'
+          - type: 'null'
+    GoverningDocumentPage:
+      type: object
+      required:
+      - data
+      - next_cursor
+      properties:
+        data:
+          type: array
+          items:
+            $ref: '#/components/schemas/GoverningDocument'
+        next_cursor:
+          $ref: '#/components/schemas/Cursor'
+    GoverningDocumentType:
+      type: object
+      required:
+      - id
+      - kind
+      - label
+      - definition
+      - uploadable
+      - entity_kinds
+      properties:
+        id:
+          type: string
+        kind:
+          type: string
+          enum:
+          - target
+          - catch_all
+        label:
+          type: string
+        definition:
+          type: string
+        uploadable:
+          type: boolean
+        entity_kinds:
+          type: array
+          items:
+            type: string
+    GoverningDocumentTypeList:
+      type: object
+      required:
+      - registry_version
+      - data
+      properties:
+        registry_version:
+          type: integer
+        data:
+          type: array
+          items:
+            $ref: '#/components/schemas/GoverningDocumentType'
+    GoverningField:
+      type: object
+      required:
+      - value
+      - origin
+      - status
+      - reason
+      - quote
+      properties:
+        value:
+          type:
+          - string
+          - 'null'
+        origin:
+          type:
+          - string
+          - 'null'
+          enum:
+          - extracted
+          - uploader
+          - reviewer
+          - null
+        status:
+          type: string
+          enum:
+          - verified
+          - supplied
+          - not_stated
+          - rejected
+        reason:
+          type:
+          - string
+          - 'null'
+        quote:
+          oneOf:
+          - $ref: '#/components/schemas/GoverningQuote'
+          - type: 'null'
+    GoverningQuote:
+      type: object
+      required:
+      - text
+      - start_char
+      - end_char
+      - text_sha256
+      - page
+      - heading
+      properties:
+        text:
+          type:
+          - string
+          - 'null'
+          description: '`null` when withheld because you cannot read the document.'
+        start_char:
+          type:
+          - integer
+          - 'null'
+          description: Code points into the text identified by `text_sha256`, end-exclusive.
+        end_char:
+          type:
+          - integer
+          - 'null'
+        text_sha256:
+          type: string
+        page:
+          type:
+          - integer
+          - 'null'
+        heading:
+          type:
+          - string
+          - 'null'
+    IngestHour:
+      type: object
+      required:
+      - start
+      - added
+      - parsed
+      - searchable
+      properties:
+        start:
+          type: string
+          format: date-time
+        added:
+          type: integer
+          description: Documents added in the hour.
+        parsed:
+          type: integer
+          description: Documents the parser read in the hour.
+        searchable:
+          type: integer
+          description: Documents that became searchable in the hour.
     IngestUploadRequest:
       type: object
       required:
@@ -2373,12 +4075,40 @@ components:
       properties:
         file:
           type: array
+          minItems: 1
+          maxItems: 100
+          description: The files, 1 to 100 per request, up to 2 GB each.
           items:
             type: string
             format: binary
         metadata:
           type: string
-          description: JSON-encoded object.
+          description: 'JSON-encoded object of strings, sent as a multipart part before every
+
+            file part. Ordinary keys are stored with the record. Governing uploads
+
+            require both `governing_doc_type` (an uploadable registry id) and
+
+            `governing_doc_source` (`manual`), or neither. Optional
+
+            `governing_doc_version` is at most 64 characters;
+
+            `governing_doc_effective_from` and `governing_doc_effective_to` are
+
+            valid `YYYY-MM-DD` dates with from no later than to. These optional
+
+            values are recorded as supplied, never as source quotations.
+
+            Governing validation failures return 422; an unavailable registry
+
+            returns 503 with reason `governing_types_unavailable`. Failed uploads
+
+            keep no stored originals. Keys without the `governing_doc_` prefix
+
+            keep their usual meaning.
+
+            '
+          example: '{"governing_doc_type":"access_review","governing_doc_source":"manual","governing_doc_version":"2.0","governing_doc_effective_from":"2026-01-01"}'
         classify:
           type: boolean
           default: true
@@ -2457,6 +4187,14 @@ components:
           type:
           - string
           - 'null'
+          description: 'What went wrong, in one line: `No document could be ingested.` or `2 of 10 documents could not be
+            ingested.`. `failures` says which and why.'
+        failures:
+          type: array
+          maxItems: 20
+          items:
+            $ref: '#/components/schemas/JobFailure'
+          description: Up to 20 of the job's documents that failed, with why, oldest first. Empty while none has.
         created_at:
           type: string
           format: date-time
@@ -2465,6 +4203,20 @@ components:
           - string
           - 'null'
           format: date-time
+    JobFailure:
+      type: object
+      required:
+      - document_id
+      - name
+      - error
+      properties:
+        document_id:
+          type: string
+        name:
+          type: string
+        error:
+          type: string
+          description: The document's `ingest_error`.
     JobList:
       type: object
       required:
@@ -2477,6 +4229,46 @@ components:
             $ref: '#/components/schemas/Job'
         next_cursor:
           $ref: '#/components/schemas/Cursor'
+    JobProgress:
+      type: object
+      description: Progress of background work on the workspace.
+      required:
+      - state
+      - done
+      - total
+      - percent
+      - eta_seconds
+      - started_at
+      properties:
+        state:
+          type: string
+          enum:
+          - running
+          - stalled
+          - done
+          - failed
+          description: '`stalled`: running, but no progress was reported for over 3 minutes.'
+        done:
+          type: integer
+          description: Documents processed so far.
+        total:
+          type: integer
+          description: Documents to process. 0 while not yet known.
+        percent:
+          type:
+          - number
+          - 'null'
+          description: '`done` / `total` as a percentage (0–100); `null` while `total` is 0.'
+          examples:
+          - 12.2
+        eta_seconds:
+          type:
+          - integer
+          - 'null'
+          description: Estimated seconds left while `running`; `null` when it cannot be estimated.
+        started_at:
+          type: string
+          format: date-time
     JobStatus:
       type: string
       enum:
@@ -2485,6 +4277,58 @@ components:
       - paused
       - completed
       - failed
+    JobSummary:
+      type: object
+      required:
+      - jobs
+      - pending_documents
+      - oldest_pending_at
+      - hourly
+      - indexing
+      - search_upgrade
+      properties:
+        jobs:
+          type: object
+          required:
+          - queued
+          - running
+          - completed
+          - failed
+          properties:
+            queued:
+              type: integer
+            running:
+              type: integer
+            completed:
+              type: integer
+            failed:
+              type: integer
+        pending_documents:
+          type: integer
+          description: Live documents not yet searchable and not failed.
+        oldest_pending_at:
+          type:
+          - string
+          - 'null'
+          format: date-time
+          description: When the longest-waiting pending document was added. `null` when none is pending.
+        hourly:
+          type: array
+          description: The last 24 hours, oldest first; the last bucket is the current, partial hour.
+          items:
+            $ref: '#/components/schemas/IngestHour'
+        indexing:
+          oneOf:
+          - $ref: '#/components/schemas/JobProgress'
+          - type: 'null'
+          description: The latest update of the workspace's search index. `null` when none is running and none ended in the
+            last 24 hours.
+        search_upgrade:
+          oneOf:
+          - $ref: '#/components/schemas/JobProgress'
+          - type: 'null'
+          description: The latest upgrade of the workspace's search, reported only while it affects search results. `null`
+            otherwise, and when none is running and none ended in the last 24 hours.
     McpServer:
       type: object
       required:
@@ -2590,12 +4434,1640 @@ components:
             items:
               type: number
             description: Cost per day so far this period.
+          by_model:
+            type: array
+            description: '`llm_input` and `llm_output`: the quantity and cost per model. For these meters `price_usd` is the
+              price of the first model in the organization''s order; each model''s price is in listModels.'
+            items:
+              type: object
+              required:
+              - model
+              - name
+              - quantity
+              - cost_usd
+              properties:
+                model:
+                  type: string
+                name:
+                  type: string
+                quantity:
+                  type: number
+                cost_usd:
+                  type: number
+    Model:
+      type: object
+      required:
+      - id
+      - name
+      - vendor
+      - roles
+      - status
+      - input_price_per_1m_usd
+      - output_price_per_1m_usd
+      - allowed
+      - blocked_by
+      properties:
+        id:
+          type: string
+          examples:
+          - us.anthropic.claude-opus-5-5
+        name:
+          type: string
+          examples:
+          - Claude Opus 5.5
+        vendor:
+          type: string
+          examples:
+          - Anthropic
+        roles:
+          type: array
+          items:
+            $ref: '#/components/schemas/ModelRole'
+        status:
+          type: string
+          enum:
+          - available
+          - deprecated
+          description: '`deprecated`: still answers; move off it.'
+        input_price_per_1m_usd:
+          type: number
+          description: What this organization pays per 1M input tokens.
+        output_price_per_1m_usd:
+          type: number
+          description: What this organization pays per 1M output tokens.
+        allowed:
+          type: boolean
+          description: The workspace's answers may use it.
+        blocked_by:
+          type:
+          - string
+          - 'null'
+          enum:
+          - vendor
+          - model
+          - null
+          description: 'Why it is not allowed: its vendor or the model itself is blocked by the organization.'
+    ModelList:
+      type: object
+      required:
+      - data
+      - preferred
+      - router
+      properties:
+        data:
+          type: array
+          items:
+            $ref: '#/components/schemas/Model'
+        preferred:
+          type: array
+          items:
+            type: string
+          description: 'The order answers try models in: the first, then each fallback.'
+        router:
+          type:
+          - string
+          - 'null'
+          description: 'The allowed model that plans questions. `null`: none is allowed, so planning is skipped.'
+    ModelRole:
+      type: string
+      enum:
+      - answer
+      - route
+      description: '`answer`: writes answers. `route`: plans how to answer a question (a fast, cheaper call).'
     NodeSelection:
       type: string
       enum:
       - included
       - excluded
       - partial
+    ProcessAssessment:
+      type: object
+      required:
+      - id
+      - entity_id
+      - policy
+      - status
+      - phase
+      - progress
+      - completeness
+      - current
+      - failure
+      - requested_by
+      - as_of
+      - created_at
+      - started_at
+      - finished_at
+      - input
+      - engine
+      - results
+      - selection
+      properties:
+        id:
+          type: string
+          examples:
+          - pas_01k6c1x0d8f9g2h3j4k5m6n7p8
+        entity_id:
+          type: string
+        policy:
+          type: object
+          required:
+          - source
+          - policy_id
+          - version
+          - title
+          - approval
+          - sha256
+          properties:
+            source:
+              type: string
+              enum:
+              - catalog
+              - workspace_document
+            policy_id:
+              type: string
+            version:
+              type: string
+            title:
+              type: string
+            approval:
+              type: string
+              enum:
+              - approved
+              - draft
+              - hypothetical
+              - not_stated
+            sha256:
+              type: string
+        status:
+          type: string
+          enum:
+          - queued
+          - running
+          - completed
+          - failed
+          - cancelled
+        phase:
+          type: string
+        progress:
+          type: object
+          required:
+          - done
+          - total
+          properties:
+            done:
+              type: integer
+            total:
+              type: integer
+        completeness:
+          type:
+          - string
+          - 'null'
+          enum:
+          - complete
+          - partial
+          - null
+        current:
+          type: boolean
+          description: The assessment's input matches what an assessment would read now.
+        failure:
+          oneOf:
+          - type: object
+            required:
+            - code
+            - message
+            properties:
+              code:
+                type: string
+              message:
+                type: string
+          - type: 'null'
+        requested_by:
+          type: object
+          required:
+          - type
+          - id
+          - name
+          properties:
+            type:
+              type: string
+              enum:
+              - user
+              - token
+            id:
+              type: string
+            name:
+              type:
+              - string
+              - 'null'
+        as_of:
+          type: string
+          format: date
+        created_at:
+          type: string
+          format: date-time
+        started_at:
+          type:
+          - string
+          - 'null'
+          format: date-time
+        finished_at:
+          type:
+          - string
+          - 'null'
+          format: date-time
+        input:
+          type: object
+          required:
+          - snapshot_id
+          - input_key
+          - documents
+          - coverage
+          properties:
+            snapshot_id:
+              type: string
+            input_key:
+              type: string
+            documents:
+              type: object
+              required:
+              - included
+              - excluded_possible
+              properties:
+                included:
+                  type: integer
+                excluded_possible:
+                  type: integer
+            coverage:
+              $ref: '#/components/schemas/ProcessEvidenceCoverage'
+        engine:
+          oneOf:
+          - type: object
+            required:
+            - provider_mode
+            - workflow_origin
+            - model_id
+            - model_calls
+            - wall_seconds
+            - engine_fingerprint
+            properties:
+              provider_mode:
+                type: string
+              workflow_origin:
+                type: string
+                enum:
+                - cached
+                - extracted
+                - replayed
+                - recorded
+              model_id:
+                type:
+                - string
+                - 'null'
+              model_calls:
+                type: integer
+              wall_seconds:
+                type: number
+              engine_fingerprint:
+                type: string
+          - type: 'null'
+        results:
+          oneOf:
+          - type: array
+            items:
+              $ref: '#/components/schemas/ProcessStageResult'
+          - type: 'null'
+          description: Completed assessments only; `null` in lists.
+        selection:
+          $ref: '#/components/schemas/ProcessSelection'
+    ProcessAssessmentInput:
+      type: object
+      required:
+      - entity
+      - policy
+      - applicable
+      - not_applicable_reason
+      - inclusion_rule
+      - snapshot_id
+      - input_key
+      - build_id
+      - registry_version
+      - document_ids
+      - documents
+      - coverage
+      properties:
+        entity:
+          $ref: '#/components/schemas/ProcessEntityRef'
+        policy:
+          $ref: '#/components/schemas/ProcessPolicy'
+        applicable:
+          type: boolean
+        not_applicable_reason:
+          type:
+          - string
+          - 'null'
+        inclusion_rule:
+          type: string
+          enum:
+          - confirmed_and_likely
+        snapshot_id:
+          type: string
+        input_key:
+          type: string
+        build_id:
+          type: string
+        registry_version:
+          type: integer
+        document_ids:
+          type: array
+          items:
+            type: string
+        documents:
+          type: object
+          required:
+          - included
+          - excluded_possible
+          properties:
+            included:
+              type: integer
+            excluded_possible:
+              type: integer
+        coverage:
+          $ref: '#/components/schemas/ProcessEvidenceCoverage'
+    ProcessAssessmentPage:
+      type: object
+      required:
+      - data
+      - next_cursor
+      - current_input_key
+      properties:
+        data:
+          type: array
+          items:
+            $ref: '#/components/schemas/ProcessAssessment'
+        next_cursor:
+          $ref: '#/components/schemas/Cursor'
+        current_input_key:
+          type:
+          - string
+          - 'null'
+    ProcessAssessmentStart:
+      type: object
+      required:
+      - policy_id
+      - version
+      - snapshot_id
+      properties:
+        policy_id:
+          type: string
+          maxLength: 64
+        version:
+          type: string
+          maxLength: 64
+        snapshot_id:
+          type: string
+          maxLength: 128
+        policy_source:
+          type: string
+          enum:
+          - catalog
+          - workspace_document
+          description: Omitted means `catalog`.
+        governing_document_id:
+          type: string
+          maxLength: 64
+    ProcessDocumentText:
+      type: object
+      required:
+      - doc_id
+      - text
+      - total_chars
+      - truncated
+      - offsets
+      - content_version
+      - text_sha256
+      - parse_key
+      properties:
+        doc_id:
+          type: string
+        text:
+          type: string
+          description: Plain text; never render as HTML.
+        total_chars:
+          type: integer
+          description: Code points in the complete text.
+        truncated:
+          type: boolean
+        offsets:
+          type: string
+          const: code_points
+        content_version:
+          type: string
+          description: SHA-256 of the original file.
+        text_sha256:
+          type: string
+          description: SHA-256 of the complete text.
+        parse_key:
+          type: string
+    ProcessEntity:
+      allOf:
+      - $ref: '#/components/schemas/ProcessEntityRef'
+      - type: object
+        required:
+        - created_by
+        - provenance
+        - aliases
+        - registry_version
+        - build_id
+        properties:
+          created_by:
+            type:
+            - string
+            - 'null'
+          provenance:
+            type: array
+            items:
+              type: string
+          aliases:
+            type: array
+            items:
+              $ref: '#/components/schemas/ProcessEntityAlias'
+          registry_version:
+            type: integer
+          build_id:
+            type: string
+    ProcessEntityAlias:
+      type: object
+      required:
+      - key_type
+      - canonical
+      - surface
+      - status
+      - strength
+      - shared
+      - source
+      - added_by
+      - added_at
+      - evidence
+      - df
+      - pending_extraction
+      - decision
+      properties:
+        key_type:
+          type: string
+        canonical:
+          type: string
+        surface:
+          type: string
+        status:
+          type: string
+          enum:
+          - accepted
+          - proposed
+          - rejected
+        strength:
+          type: string
+          enum:
+          - strong
+          - weak
+        shared:
+          type: boolean
+        source:
+          type: string
+        added_by:
+          type: string
+        added_at:
+          type:
+          - string
+          - 'null'
+        evidence:
+          oneOf:
+          - type: object
+            required:
+            - doc_id
+            - doc_title
+            - quote
+            properties:
+              doc_id:
+                type: string
+              doc_title:
+                type:
+                - string
+                - 'null'
+              quote:
+                type:
+                - string
+                - 'null'
+          - type: 'null'
+        df:
+          type:
+          - integer
+          - 'null'
+        pending_extraction:
+          type: boolean
+        decision:
+          oneOf:
+          - type: object
+            required:
+            - status
+            - by
+            - at
+            properties:
+              status:
+                type: string
+                enum:
+                - accepted
+                - rejected
+              by:
+                type: string
+              at:
+                type: string
+          - type: 'null'
+    ProcessEntityCoverage:
+      type: object
+      description: Whole-file coverage after access filtering. `null` means unknown, never complete.
+      required:
+      - keys_searched
+      - keys_pending_extraction
+      - sources_searched
+      - sources_not_connected
+      - unconnected_structure
+      - counts
+      - unplaced_attachments
+      - complete
+      - complete_reason
+      properties:
+        keys_searched:
+          oneOf:
+          - type: array
+            items:
+              $ref: '#/components/schemas/ProcessSearchedKey'
+          - type: 'null'
+        keys_pending_extraction:
+          oneOf:
+          - type: array
+            items:
+              $ref: '#/components/schemas/ProcessPendingKey'
+          - type: 'null'
+        sources_searched:
+          oneOf:
+          - type: array
+            items:
+              type: string
+          - type: 'null'
+        sources_not_connected:
+          oneOf:
+          - type: array
+            items:
+              type: string
+          - type: 'null'
+        unconnected_structure:
+          oneOf:
+          - type: array
+            items:
+              type: string
+          - type: 'null'
+        counts:
+          oneOf:
+          - type: object
+            required:
+            - confirmed
+            - likely
+            - possible
+            - rejected
+            properties:
+              confirmed:
+                type: integer
+              likely:
+                type: integer
+              possible:
+                type: integer
+              rejected:
+                type: integer
+          - type: 'null'
+        unplaced_attachments:
+          type:
+          - integer
+          - 'null'
+        complete:
+          type:
+          - boolean
+          - 'null'
+        complete_reason:
+          type:
+          - string
+          - 'null'
+    ProcessEntityDocument:
+      type: object
+      required:
+      - doc_id
+      - urn
+      - title
+      - filename
+      - path
+      - source_type
+      - doc_date
+      - content_version
+      - section
+      - level
+      - level_reason
+      - decision
+      - mentions
+      - via
+      - thread
+      - unplaced_attachments
+      properties:
+        doc_id:
+          type: string
+        urn:
+          type:
+          - string
+          - 'null'
+        title:
+          type:
+          - string
+          - 'null'
+        filename:
+          type:
+          - string
+          - 'null'
+        path:
+          type:
+          - string
+          - 'null'
+        source_type:
+          type: string
+        doc_date:
+          type:
+          - string
+          - 'null'
+        content_version:
+          type:
+          - string
+          - 'null'
+        section:
+          type: string
+        level:
+          type: string
+          enum:
+          - confirmed
+          - likely
+          - possible
+        level_reason:
+          type: string
+        decision:
+          oneOf:
+          - $ref: '#/components/schemas/ProcessLinkDecision'
+          - type: 'null'
+        mentions:
+          type: array
+          items:
+            $ref: '#/components/schemas/ProcessMention'
+        via:
+          oneOf:
+          - type: object
+            required:
+            - node
+            - doc_id
+            properties:
+              node:
+                type: string
+              doc_id:
+                type:
+                - string
+                - 'null'
+          - type: 'null'
+        thread:
+          oneOf:
+          - type: object
+            required:
+            - thread_id
+            - subject
+            - message_count
+            properties:
+              thread_id:
+                type: string
+              subject:
+                type:
+                - string
+                - 'null'
+              message_count:
+                type: integer
+          - type: 'null'
+        unplaced_attachments:
+          type: array
+          items:
+            type: string
+    ProcessEntityFilePage:
+      type: object
+      required:
+      - entity
+      - build_id
+      - registry_version
+      - coverage
+      - sections
+      - data
+      - next_cursor
+      properties:
+        entity:
+          $ref: '#/components/schemas/ProcessEntityRef'
+        build_id:
+          type: string
+        registry_version:
+          type: integer
+        coverage:
+          $ref: '#/components/schemas/ProcessEntityCoverage'
+        sections:
+          type: array
+          items:
+            type: object
+            required:
+            - section
+            - document_count
+            properties:
+              section:
+                type: string
+              document_count:
+                type: integer
+        data:
+          type: array
+          items:
+            $ref: '#/components/schemas/ProcessEntityDocument'
+        next_cursor:
+          $ref: '#/components/schemas/Cursor'
+    ProcessEntityPage:
+      type: object
+      required:
+      - data
+      - next_cursor
+      - total
+      properties:
+        data:
+          type: array
+          items:
+            $ref: '#/components/schemas/ProcessEntitySummary'
+        next_cursor:
+          $ref: '#/components/schemas/Cursor'
+        total:
+          type:
+          - integer
+          - 'null'
+    ProcessEntityRef:
+      type: object
+      required:
+      - entity_id
+      - kind
+      - display_name
+      properties:
+        entity_id:
+          type: string
+        kind:
+          type: string
+        display_name:
+          type: string
+    ProcessEntitySummary:
+      allOf:
+      - $ref: '#/components/schemas/ProcessEntityRef'
+      - type: object
+        required:
+        - created_by
+        - matched_alias
+        properties:
+          created_by:
+            type:
+            - string
+            - 'null'
+          matched_alias:
+            oneOf:
+            - type: object
+              required:
+              - key_type
+              - surface
+              properties:
+                key_type:
+                  type: string
+                surface:
+                  type: string
+            - type: 'null'
+    ProcessEvidenceCoverage:
+      type: object
+      required:
+      - complete
+      - file_complete
+      - file_complete_reason
+      - members
+      - excluded_possible
+      - missing_text
+      - unreadable
+      - inaccessible
+      - out_of_budget
+      - unplaced_attachments
+      - keys_pending_extraction
+      - reasons
+      properties:
+        complete:
+          type: boolean
+          description: True only when nothing below limits the evidence set; otherwise absence of evidence is never reported
+            as a finding.
+        file_complete:
+          type:
+          - boolean
+          - 'null'
+        file_complete_reason:
+          type:
+          - string
+          - 'null'
+        members:
+          type: integer
+        excluded_possible:
+          type: integer
+        missing_text:
+          type: integer
+        unreadable:
+          type: integer
+        inaccessible:
+          type: integer
+        out_of_budget:
+          type: integer
+        unplaced_attachments:
+          type: integer
+        keys_pending_extraction:
+          type: integer
+        reasons:
+          type: array
+          items:
+            type: string
+    ProcessLinkDecision:
+      type: object
+      required:
+      - decision
+      - manual
+      - by
+      - at
+      - reason
+      properties:
+        decision:
+          type: string
+          enum:
+          - confirmed
+          - rejected
+        manual:
+          type: boolean
+        by:
+          type: string
+        at:
+          type:
+          - string
+          - 'null'
+        reason:
+          type:
+          - string
+          - 'null'
+    ProcessMandate:
+      type: string
+      enum:
+      - explicit
+      - inferred
+    ProcessMapStatus:
+      type: object
+      required:
+      - enabled
+      - entity_index
+      - review
+      - document_text
+      - policies
+      - assessment
+      properties:
+        enabled:
+          type: boolean
+          description: The knowledge hub is configured. When false every other Process Map operation answers 503.
+        entity_index:
+          type: boolean
+        review:
+          type: string
+          enum:
+          - available
+          - read_only
+          - unavailable
+        document_text:
+          type: boolean
+        policies:
+          type: integer
+          minimum: 0
+        assessment:
+          type: string
+          enum:
+          - available
+          - no_policies
+          - provider_off
+          - unavailable
+    ProcessMention:
+      type: object
+      required:
+      - key_type
+      - surface
+      - canonical
+      - key_status
+      - tier
+      - field
+      - chunk_id
+      - start_char
+      - end_char
+      - occurrences
+      - snippet
+      - snippet_match
+      properties:
+        key_type:
+          type: string
+        surface:
+          type: string
+        canonical:
+          type: string
+        key_status:
+          type:
+          - string
+          - 'null'
+          enum:
+          - accepted
+          - proposed
+          - null
+        tier:
+          type: string
+          enum:
+          - t0
+          - t1
+          - t2
+          - struct
+        field:
+          type: string
+        chunk_id:
+          type:
+          - string
+          - 'null'
+        start_char:
+          type:
+          - integer
+          - 'null'
+          description: Code points into the document text, end-exclusive.
+        end_char:
+          type:
+          - integer
+          - 'null'
+        occurrences:
+          type: integer
+        snippet:
+          type:
+          - string
+          - 'null'
+        snippet_match:
+          oneOf:
+          - type: object
+            required:
+            - start
+            - end
+            properties:
+              start:
+                type: integer
+              end:
+                type: integer
+          - type: 'null'
+    ProcessPendingKey:
+      type: object
+      required:
+      - key_type
+      - surface
+      properties:
+        key_type:
+          type: string
+        surface:
+          type: string
+    ProcessPolicy:
+      type: object
+      required:
+      - source
+      - policy_id
+      - version
+      - title
+      - approval
+      - effective_from
+      - effective_to
+      - supersedes
+      - entity_kinds
+      - availability
+      - applicable
+      - governing
+      properties:
+        source:
+          type: string
+          enum:
+          - catalog
+          - workspace_document
+        policy_id:
+          type: string
+        version:
+          type: string
+        title:
+          type: string
+        approval:
+          type: string
+          enum:
+          - approved
+          - draft
+          - hypothetical
+          - not_stated
+        effective_from:
+          type: string
+          format: date
+        effective_to:
+          type:
+          - string
+          - 'null'
+          format: date
+        supersedes:
+          type:
+          - string
+          - 'null'
+        entity_kinds:
+          type: array
+          items:
+            type: string
+        availability:
+          type: object
+          required:
+          - state
+          - reason
+          properties:
+            state:
+              type: string
+              enum:
+              - available
+              - unavailable
+            reason:
+              type:
+              - string
+              - 'null'
+              description: Why the policy is unavailable, including `ambiguous`, `needs_review` and `text_pending`.
+        applicable:
+          type:
+          - boolean
+          - 'null'
+        governing:
+          description: Null for catalog policies. An ambiguous workspace slot is unavailable until a document is selected;
+            its singular document ids, source and status are null.
+          oneOf:
+          - type: 'null'
+          - type: object
+            required:
+            - governing_document_id
+            - doc_id
+            - document_id
+            - source
+            - status
+            - provisional
+            - ambiguous
+            - alternatives
+            - default_for_today
+            - eligibility_reasons
+            properties:
+              governing_document_id:
+                type:
+                - string
+                - 'null'
+              doc_id:
+                type:
+                - string
+                - 'null'
+              document_id:
+                type:
+                - string
+                - 'null'
+              source:
+                type:
+                - string
+                - 'null'
+                enum:
+                - discovered
+                - uploaded
+                - null
+              status:
+                type:
+                - string
+                - 'null'
+                enum:
+                - proposed
+                - confirmed
+                - null
+              provisional:
+                type: boolean
+              ambiguous:
+                type: boolean
+              alternatives:
+                type: array
+                description: Documents that can resolve an ambiguous slot; empty for an unambiguous slot.
+                items:
+                  $ref: '#/components/schemas/GoverningAlternative'
+              default_for_today:
+                type: boolean
+              eligibility_reasons:
+                type: array
+                items:
+                  type: string
+    ProcessPolicyClause:
+      type: object
+      required:
+      - locator
+      - heading
+      - text
+      properties:
+        locator:
+          type: string
+        heading:
+          type: string
+        text:
+          type: string
+    ProcessPolicyList:
+      type: object
+      required:
+      - data
+      - next_cursor
+      properties:
+        data:
+          type: array
+          items:
+            $ref: '#/components/schemas/ProcessPolicy'
+        next_cursor:
+          $ref: '#/components/schemas/Cursor'
+    ProcessPolicyPreview:
+      type: object
+      required:
+      - policy
+      - workflow
+      - stages
+      - clauses
+      properties:
+        policy:
+          $ref: '#/components/schemas/ProcessPolicy'
+        workflow:
+          type: object
+          required:
+          - state
+          - origin
+          - model_id
+          - review
+          properties:
+            state:
+              type: string
+              enum:
+              - ready
+              - not_read
+              - invalid
+            origin:
+              type:
+              - string
+              - 'null'
+              enum:
+              - cached
+              - recorded
+              - null
+            model_id:
+              type:
+              - string
+              - 'null'
+            review:
+              type: string
+              enum:
+              - provisional
+        stages:
+          type: array
+          items:
+            $ref: '#/components/schemas/ProcessPolicyStage'
+        clauses:
+          type: array
+          items:
+            $ref: '#/components/schemas/ProcessPolicyClause'
+    ProcessPolicyStage:
+      type: object
+      description: A step of the policy workflow. `prerequisites` and `starts_after` carry the order the policy sets between
+        steps; an `inferred` mandate means it was read from context rather than stated.
+      required:
+      - stage_id
+      - order
+      - title
+      - description
+      - clause_locators
+      - mandate
+      - prerequisites
+      - starts_after
+      properties:
+        stage_id:
+          type: string
+        order:
+          type: integer
+        title:
+          type: string
+        description:
+          type: string
+        clause_locators:
+          type: array
+          items:
+            type: string
+        mandate:
+          $ref: '#/components/schemas/ProcessMandate'
+        prerequisites:
+          type: array
+          description: Every group must be met before this step; a group is met when all stages of any one option are.
+          items:
+            $ref: '#/components/schemas/ProcessStagePrerequisite'
+        starts_after:
+          type:
+          - string
+          - 'null'
+          description: Stage whose completion starts this step, when the policy times it that way.
+    ProcessQuote:
+      type: object
+      required:
+      - role
+      - doc_id
+      - doc_title
+      - quote
+      - start_char
+      - end_char
+      - content_version
+      - parse_key
+      - text_sha256
+      - locator
+      - access
+      properties:
+        role:
+          type: string
+          enum:
+          - supporting
+          - contradicting
+          - related
+          - hold
+        doc_id:
+          type: string
+        doc_title:
+          type: string
+        quote:
+          type:
+          - string
+          - 'null'
+          description: '`null` when withheld.'
+        start_char:
+          type:
+          - integer
+          - 'null'
+          description: Code points into the text identified by `text_sha256`, end-exclusive.
+        end_char:
+          type:
+          - integer
+          - 'null'
+        content_version:
+          type: string
+        parse_key:
+          type: string
+        text_sha256:
+          type: string
+        locator:
+          type: object
+          required:
+          - page
+          - heading
+          - line
+          properties:
+            page:
+              type:
+              - integer
+              - 'null'
+            heading:
+              type: string
+            line:
+              type: integer
+        access:
+          type: string
+          enum:
+          - readable
+          - withheld
+          - changed
+    ProcessSearchedKey:
+      type: object
+      required:
+      - key_type
+      - surface
+      - status
+      - strength
+      - df
+      properties:
+        key_type:
+          type: string
+        surface:
+          type: string
+        status:
+          type: string
+          enum:
+          - accepted
+          - proposed
+        strength:
+          type: string
+          enum:
+          - strong
+          - weak
+        df:
+          type:
+          - integer
+          - 'null'
+    ProcessSelection:
+      type: object
+      required:
+      - reason
+      - provisional
+      - governing_document_id
+      - document_id
+      - content_version
+      - source
+      - status
+      - on_date
+      properties:
+        reason:
+          type: string
+          enum:
+          - user_selected
+          - confirmed_upload
+          - confirmed_discovered
+          - proposed_discovered
+          - user_selected_document
+        provisional:
+          type: boolean
+          description: The policy is a proposal nobody has reviewed.
+        governing_document_id:
+          type:
+          - string
+          - 'null'
+        document_id:
+          type:
+          - string
+          - 'null'
+        content_version:
+          type:
+          - string
+          - 'null'
+        source:
+          type:
+          - string
+          - 'null'
+          enum:
+          - discovered
+          - uploaded
+          - null
+        status:
+          type:
+          - string
+          - 'null'
+          enum:
+          - proposed
+          - confirmed
+          - null
+        on_date:
+          type:
+          - string
+          - 'null'
+          format: date
+    ProcessStagePrerequisite:
+      type: object
+      required:
+      - any_of
+      - mandate
+      properties:
+        any_of:
+          type: array
+          minItems: 1
+          items:
+            type: array
+            minItems: 1
+            items:
+              type: string
+        mandate:
+          $ref: '#/components/schemas/ProcessMandate'
+    ProcessStageResult:
+      type: object
+      required:
+      - stage_id
+      - order
+      - title
+      - outcome
+      - basis
+      - explanation
+      - engine
+      - findings
+      - quotes
+      - clauses
+      properties:
+        stage_id:
+          type: string
+        order:
+          type: integer
+        title:
+          type: string
+        outcome:
+          type: string
+          enum:
+          - supported
+          - contradicted
+          - not_evidenced
+          - not_applicable
+          - cannot_determine
+        basis:
+          type: string
+          enum:
+          - supporting_evidence
+          - exception
+          - contradicting_evidence
+          - absent_complete_coverage
+          - incomplete_coverage
+          - retrieval_failed
+          - unresolved
+          - not_applicable
+          - not_due
+          - blocked
+        explanation:
+          type: string
+        engine:
+          type: object
+          required:
+          - state
+          - label
+          - reason
+          - reason_text
+          - occurrences
+          properties:
+            state:
+              type: string
+              description: satisfied, exempted, contradicted, not_observed, blocked, not_due, not_applicable, indeterminate
+                or retrieval_failed.
+            label:
+              type: string
+            reason:
+              type: string
+            reason_text:
+              type: string
+            occurrences:
+              type: array
+              items:
+                type: object
+                required:
+                - occurrence
+                - state
+                - label
+                - reason
+                - reason_text
+                - notes
+                - coverage
+                properties:
+                  occurrence:
+                    type:
+                    - integer
+                    - 'null'
+                  state:
+                    type: string
+                  label:
+                    type: string
+                  reason:
+                    type: string
+                  reason_text:
+                    type: string
+                  notes:
+                    type: array
+                    items:
+                      type: string
+                  coverage:
+                    type: object
+                    required:
+                    - level
+                    - reasons
+                    - documents_in_scope
+                    - documents_indexed
+                    - unreadable
+                    properties:
+                      level:
+                        type: string
+                        enum:
+                        - complete
+                        - partial
+                        - failed
+                      reasons:
+                        type: array
+                        items:
+                          type: string
+                      documents_in_scope:
+                        type: integer
+                      documents_indexed:
+                        type: integer
+                      unreadable:
+                        type: integer
+        findings:
+          type: array
+          items:
+            type: object
+            required:
+            - kind
+            - label
+            - impact
+            - certainty
+            - summary
+            - closes_with
+            properties:
+              kind:
+                type: string
+              label:
+                type: string
+              impact:
+                type: string
+                enum:
+                - high
+                - medium
+                - low
+              certainty:
+                type: string
+                enum:
+                - direct
+                - scoped_absence
+                - partial
+                - unresolved
+              summary:
+                type: string
+              closes_with:
+                type:
+                - string
+                - 'null'
+        quotes:
+          type: array
+          items:
+            $ref: '#/components/schemas/ProcessQuote'
+        clauses:
+          type: array
+          items:
+            $ref: '#/components/schemas/ProcessPolicyClause'
+    ProcessWorkspaceDocument:
+      type: object
+      required:
+      - doc_id
+      - name
+      - path
+      - source_label
+      - modified_at
+      - content_version
+      - has_text
+      - in_file
+      properties:
+        doc_id:
+          type: string
+        name:
+          type: string
+        path:
+          type:
+          - string
+          - 'null'
+        source_label:
+          type: string
+        modified_at:
+          type:
+          - string
+          - 'null'
+        content_version:
+          type:
+          - string
+          - 'null'
+        has_text:
+          type: boolean
+        in_file:
+          type: object
+          required:
+          - state
+          properties:
+            state:
+              type: string
+              enum:
+              - in_file
+              - removed
+              - not_in_file
+            level:
+              type: string
+              enum:
+              - confirmed
+              - likely
+              - possible
+    ProcessWorkspaceDocumentPage:
+      type: object
+      required:
+      - data
+      - next_cursor
+      properties:
+        data:
+          type: array
+          items:
+            $ref: '#/components/schemas/ProcessWorkspaceDocument'
+        next_cursor:
+          $ref: '#/components/schemas/Cursor'
     Provider:
       type: string
       enum:
@@ -2664,6 +6136,26 @@ components:
           type:
           - string
           - 'null'
+    RegexOptions:
+      type: object
+      description: 'How `regex` mode matches; only with `mode: regex`.'
+      properties:
+        case_sensitive:
+          type: boolean
+          default: true
+          description: 'Inline flags work too: `(?i)` makes the pattern case-insensitive.'
+        fields:
+          type: array
+          minItems: 1
+          items:
+            type: string
+            enum:
+            - text
+            - filename
+            - path
+          default:
+          - text
+          description: '`text`: the passage text · `filename`: the document''s file name · `path`: its path in the source.'
     RetentionStatus:
       type: string
       enum:
@@ -2678,21 +6170,41 @@ components:
       - ingest:write
       - search:read
       - search:write
+      - search:compare
       - agent:read
       - agent:write
       - sources:read
       - sources:write
       - billing:read
       - billing:write
-    SearchRequest:
+    SearchCompareError:
+      type: object
+      required:
+      - code
+      - message
+      properties:
+        code:
+          type: string
+          enum:
+          - timeout
+          - unavailable
+          - failed
+          description: '`timeout`: the engine did not answer in time · `unavailable`: the engine cannot answer for this workspace
+            right now (the next-generation engine is not available for it, or the current engine is still starting up) · `failed`:
+            anything else.'
+        message:
+          type: string
+    SearchCompareRequest:
       type: object
       required:
       - query
+      description: A `SearchRequest` without `cursor`, checked the same way.
       properties:
         query:
           type: string
           minLength: 1
-          description: Natural-language or keyword query.
+          description: Natural-language or keyword query. In `regex` mode, an RE2 regular expression of at most 1,000 characters
+            (no backreferences or lookaround).
         sources:
           type: array
           items:
@@ -2704,7 +6216,11 @@ components:
           - hybrid
           - semantic
           - keyword
+          - regex
           default: hybrid
+          description: As in `SearchRequest`. Both sides run the same mode.
+        regex:
+          $ref: '#/components/schemas/RegexOptions'
         filters:
           type: object
           properties:
@@ -2731,23 +6247,195 @@ components:
           minimum: 1
           maximum: 100
           default: 10
+          description: Results per side.
+    SearchCompareResponse:
+      type: object
+      required:
+      - query
+      - mode
+      - took_ms
+      - baseline
+      - candidate
+      - overlap
+      - only_baseline
+      - only_candidate
+      properties:
+        query:
+          type: string
+        mode:
+          type: string
+          enum:
+          - hybrid
+          - semantic
+          - keyword
+          - regex
+        took_ms:
+          type: integer
+          description: The whole comparison.
+        cost_usd:
+          type: number
+          description: What the call cost (one `search` query).
+        baseline:
+          $ref: '#/components/schemas/SearchCompareSide'
+        candidate:
+          $ref: '#/components/schemas/SearchCompareSide'
+        overlap:
+          type: object
+          required:
+          - at_10
+          - at_limit
+          description: The share (0 to 1) of the baseline's first 10 (`at_10`) and first `limit` (`at_limit`) result ids that
+            are also among the candidate's first 10 (or `limit`). `null` when either side has an `error`, or when neither
+            side returned anything.
+          properties:
+            at_10:
+              type:
+              - number
+              - 'null'
+              minimum: 0
+              maximum: 1
+            at_limit:
+              type:
+              - number
+              - 'null'
+              minimum: 0
+              maximum: 1
+        only_baseline:
+          type: array
+          items:
+            type: string
+          description: The ids of the results only the baseline returned, in its order. Empty when either side has an `error`.
+        only_candidate:
+          type: array
+          items:
+            type: string
+          description: The ids of the results only the candidate returned, in its order. Empty when either side has an `error`.
+    SearchCompareSide:
+      type: object
+      required:
+      - results
+      - total
+      - total_is_lower_bound
+      - took_ms
+      - error
+      description: One search engine's answer.
+      properties:
+        results:
+          type: array
+          items:
+            $ref: '#/components/schemas/SearchResult'
+          description: As `search` returns them. Empty when `error` is set.
+        total:
+          type: integer
+          description: 'Regex mode: every document the pattern matches. Other modes: the results returned.'
+        total_is_lower_bound:
+          type: boolean
+          description: 'Regex mode: true when the engine stopped counting early, so there are at least `total` matching documents.
+            False in the other modes.'
+        took_ms:
+          type: integer
+          description: How long this engine took.
+        error:
+          oneOf:
+          - $ref: '#/components/schemas/SearchCompareError'
+          - type: 'null'
+          description: Why this side has no results; `null` when it answered.
+    SearchRequest:
+      type: object
+      required:
+      - query
+      properties:
+        query:
+          type: string
+          minLength: 1
+          description: Natural-language or keyword query. In `regex` mode, an RE2 regular expression of at most 1,000 characters
+            (no backreferences or lookaround).
+        sources:
+          type: array
+          items:
+            type: string
+          description: 'Limit to these source IDs. Default: every source the token can read.'
+        mode:
+          type: string
+          enum:
+          - hybrid
+          - semantic
+          - keyword
+          - regex
+          default: hybrid
+          description: '`hybrid`: keyword and semantic results fused, then reranked · `semantic`: by meaning only (vector
+            similarity) · `keyword`: by terms only (BM25) · `regex`: documents with a passage matching `query` as a regular
+            expression, one result each (its passage with the most matches), most matches first. Every mode pages (`cursor`)
+            and keeps to the sources and permissions of the token.'
+        regex:
+          $ref: '#/components/schemas/RegexOptions'
+        cursor:
+          type: string
+          description: The `next_cursor` of the previous page, in any mode. Send the same `query`, `mode`, `regex`, `sources`,
+            `filters` and `limit` as that page; a cursor from another search is a 400 on `cursor`. Each page runs the search
+            again, so documents changed since the previous page may move.
+        filters:
+          type: object
+          properties:
+            record_type:
+              type: array
+              items:
+                type: string
+            owner:
+              type: string
+            sensitivity:
+              type: array
+              items:
+                $ref: '#/components/schemas/Sensitivity'
+            retention_status:
+              $ref: '#/components/schemas/RetentionStatus'
+            created_after:
+              type: string
+              format: date
+            created_before:
+              type: string
+              format: date
+        limit:
+          type: integer
+          minimum: 1
+          maximum: 100
+          default: 10
+          description: Documents per page, one result each, in every mode. A page is short only when it is the last.
     SearchResponse:
       type: object
       required:
       - took_ms
       - total
+      - total_is_lower_bound
       - results
       properties:
         took_ms:
           type: integer
         total:
           type: integer
+          description: 'The documents available over all pages (one result each), or a lower bound on them (`total_is_lower_bound`).
+            Regex mode: every document the pattern matches. Other modes: the ranked documents the search can page through,
+            at most 1,000 for `keyword` and `semantic` and 200 for `hybrid` (the pool it reranks). Other modes look one document
+            past the page, so while more pages follow `total` is usually the documents so far plus one, a lower bound; it
+            is exact once the ranking ends before the cap, and at the cap it is the cap, with no page past it.'
+        total_is_lower_bound:
+          type: boolean
+          description: 'True when there may be more documents than `total`: in `hybrid`, `semantic` and `keyword` while more
+            pages follow or at the cap; in `regex` when the engine stopped counting early.'
         cost_usd:
           type: number
         results:
           type: array
           items:
             $ref: '#/components/schemas/SearchResult'
+          description: 'This page: one result a document (its best passage), best first. Ranks continue from the previous
+            page, and a document is on one page only (unless it changed between pages).'
+        next_cursor:
+          type:
+          - string
+          - 'null'
+          description: Send it as `cursor` for the next page, in any mode; `null` on the last page. Each page runs the search
+            again and is billed as a search.
     SearchResult:
       type: object
       required:
@@ -2785,6 +6473,15 @@ components:
           type: string
         retention:
           $ref: '#/components/schemas/RecordRetention'
+        match_count:
+          type: integer
+          description: 'Regex mode: how many times the pattern matched in this result''s best passage, over the searched fields.'
+        highlights:
+          type: array
+          items:
+            $ref: '#/components/schemas/SnippetRange'
+          description: 'Regex mode: the parts of `snippet` that matched, as character offsets (Unicode code points). Empty
+            in the other modes.'
     SelectionPreview:
       type: object
       required:
@@ -2812,6 +6509,19 @@ components:
       - pii
       - phi
       - pci
+    SnippetRange:
+      type: object
+      required:
+      - start
+      - end
+      properties:
+        start:
+          type: integer
+          minimum: 0
+        end:
+          type: integer
+          minimum: 0
+          description: Exclusive.
     Source:
       type: object
       required:

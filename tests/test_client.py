@@ -232,6 +232,8 @@ def test_invalid_values_are_still_rejected(client: Nx, api: respx.MockRouter) ->
 
 
 def test_request_body_is_json(client: Nx, api: respx.MockRouter) -> None:
-    route = api.post("/v1/search").respond(json={"took_ms": 3, "total": 0, "results": []})
+    route = api.post("/v1/search").respond(
+        json={"took_ms": 3, "total": 0, "total_is_lower_bound": False, "results": []}
+    )
     client.search("cap", sources=["src_1"], limit=5)
     assert json.loads(route.calls.last.request.content) == {"query": "cap", "sources": ["src_1"], "limit": 5}
