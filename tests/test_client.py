@@ -79,6 +79,24 @@ def test_default_headers_and_with_options(client: Nx, api: respx.MockRouter) -> 
     assert not client._http.is_closed
 
 
+def test_workspace_header(monkeypatch: pytest.MonkeyPatch, api: respx.MockRouter) -> None:
+    route = api.get("/v1/jobs/job_1").respond(json=job())
+    with Nx(api_key="k", base_url=BASE_URL) as nx:
+        nx.jobs.get("job_1")
+        assert "Nx-Workspace" not in route.calls.last.request.headers
+        finance = nx.with_options(workspace="ws_finance")
+        finance.jobs.get("job_1")
+        assert route.calls.last.request.headers["Nx-Workspace"] == "ws_finance"
+        assert nx.workspace is None
+    monkeypatch.setenv("NX_WORKSPACE", "ws_env")
+    with Nx(api_key="k", base_url=BASE_URL) as nx:
+        nx.jobs.get("job_1")
+        assert route.calls.last.request.headers["Nx-Workspace"] == "ws_env"
+    with Nx(api_key="k", base_url=BASE_URL, workspace="ws_arg") as nx:
+        nx.jobs.get("job_1")
+        assert route.calls.last.request.headers["Nx-Workspace"] == "ws_arg"
+
+
 def test_mutations_send_idempotency_key(client: Nx, api: respx.MockRouter) -> None:
     route = api.post("/v1/documents").respond(202, json=job())
     client.documents.ingest(url="https://example.com/a.pdf")

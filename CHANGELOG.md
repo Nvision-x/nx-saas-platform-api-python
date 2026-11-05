@@ -1,5 +1,10 @@
 # Changelog
 
+## Unreleased
+
+Tokens that reach several workspaces: the `workspace` client option (or `NX_WORKSPACE`) sends `Nx-Workspace` on every
+call, and `with_options(workspace=…)` switches workspace on a copy that shares the connection pool.
+
 ## 0.2.0
 
 Models regenerated from the current API spec. Regex search mode (`mode="regex"` with `regex` options), search

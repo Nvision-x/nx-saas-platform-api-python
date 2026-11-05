@@ -54,6 +54,7 @@ class BaseClient:
     base_url: httpx.URL
     timeout: httpx.Timeout
     max_retries: int
+    workspace: str | None
     _owns_http: bool
 
     def __init__(
@@ -64,6 +65,7 @@ class BaseClient:
         timeout: float | httpx.Timeout | None,
         max_retries: int,
         default_headers: Mapping[str, str] | None,
+        workspace: str | None = None,
     ) -> None:
         api_key = api_key or os.environ.get("NX_API_KEY")
         if not api_key:
@@ -77,6 +79,7 @@ class BaseClient:
         else:
             self.timeout = httpx.Timeout(timeout)
         self.max_retries = max_retries
+        self.workspace = workspace or os.environ.get("NX_WORKSPACE") or None
         self._default_headers = dict(default_headers or {})
 
     def _bind_resources(self) -> None:
@@ -84,12 +87,14 @@ class BaseClient:
 
     @property
     def default_headers(self) -> dict[str, str]:
-        return {
+        headers = {
             "Authorization": f"Bearer {self.api_key}",
             "Accept": "application/json",
             "User-Agent": f"nvisionx-python/{__version__}",
-            **self._default_headers,
         }
+        if self.workspace:
+            headers["Nx-Workspace"] = self.workspace
+        return {**headers, **self._default_headers}
 
     def _prepare(self, options: RequestOptions) -> RequestOptions:
         if options.method == "GET" or options.idempotency_key:
