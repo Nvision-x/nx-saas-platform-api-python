@@ -37,6 +37,7 @@ def _with_options(
     timeout: float | httpx.Timeout | None,
     max_retries: int | None,
     default_headers: Mapping[str, str] | None,
+    workspace: str | None,
 ) -> SelfT:
     clone = copy.copy(client)
     if api_key is not None:
@@ -49,6 +50,8 @@ def _with_options(
         clone.max_retries = max_retries
     if default_headers is not None:
         clone._default_headers = {**client._default_headers, **default_headers}
+    if workspace is not None:
+        clone.workspace = workspace
     clone._owns_http = False
     clone._bind_resources()
     return clone
@@ -74,6 +77,7 @@ class Nx(BaseClient):
         max_retries: int = DEFAULT_MAX_RETRIES,
         default_headers: Mapping[str, str] | None = None,
         http_client: httpx.Client | None = None,
+        workspace: str | None = None,
     ) -> None:
         super().__init__(
             api_key=api_key,
@@ -81,6 +85,7 @@ class Nx(BaseClient):
             timeout=timeout,
             max_retries=max_retries,
             default_headers=default_headers,
+            workspace=workspace,
         )
         self._http = http_client or httpx.Client(follow_redirects=True)
         self._owns_http = http_client is None
@@ -105,8 +110,9 @@ class Nx(BaseClient):
         timeout: float | httpx.Timeout | None = None,
         max_retries: int | None = None,
         default_headers: Mapping[str, str] | None = None,
+        workspace: str | None = None,
     ) -> Nx:
-        return _with_options(self, api_key, base_url, timeout, max_retries, default_headers)
+        return _with_options(self, api_key, base_url, timeout, max_retries, default_headers, workspace)
 
     def send(self, options: RequestOptions, *, stream: bool = False) -> httpx.Response:
         options = self._prepare(options)
@@ -174,6 +180,7 @@ class AsyncNx(BaseClient):
         max_retries: int = DEFAULT_MAX_RETRIES,
         default_headers: Mapping[str, str] | None = None,
         http_client: httpx.AsyncClient | None = None,
+        workspace: str | None = None,
     ) -> None:
         super().__init__(
             api_key=api_key,
@@ -181,6 +188,7 @@ class AsyncNx(BaseClient):
             timeout=timeout,
             max_retries=max_retries,
             default_headers=default_headers,
+            workspace=workspace,
         )
         self._http = http_client or httpx.AsyncClient(follow_redirects=True)
         self._owns_http = http_client is None
@@ -205,8 +213,9 @@ class AsyncNx(BaseClient):
         timeout: float | httpx.Timeout | None = None,
         max_retries: int | None = None,
         default_headers: Mapping[str, str] | None = None,
+        workspace: str | None = None,
     ) -> AsyncNx:
-        return _with_options(self, api_key, base_url, timeout, max_retries, default_headers)
+        return _with_options(self, api_key, base_url, timeout, max_retries, default_headers, workspace)
 
     async def send(self, options: RequestOptions, *, stream: bool = False) -> httpx.Response:
         options = self._prepare(options)

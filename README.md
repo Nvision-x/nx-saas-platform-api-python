@@ -21,8 +21,14 @@ Python 3.10 or newer.
 
 ## Quickstart
 
-Create an API token in the Nx console under **API tokens**. A token belongs to one workspace, and every call made with
-it acts on that workspace.
+Create an API token in the Nx console under **API tokens**. A token reaches the workspaces chosen when it was created.
+A token that reaches one workspace acts on it. A token that reaches several needs the workspace for each call: pass
+`workspace=` (or set `NX_WORKSPACE`), and use `with_options(workspace=…)` to switch:
+
+```python
+nx = Nx(workspace="ws_legal")
+finance = nx.with_options(workspace="ws_finance")  # shares the connection pool
+```
 
 ```sh
 export NX_API_KEY="nx_live_…"
@@ -58,6 +64,7 @@ nx = Nx(
 | --- | --- | --- |
 | `api_key` | `NX_API_KEY` | required |
 | `base_url` | `NX_BASE_URL` | `https://platform.us.nvisionx.ai` |
+| `workspace` | `NX_WORKSPACE` | the token's workspace; required for a token that reaches several |
 | `timeout` | | 60 s; 300 s for agent runs and chat answers; no write timeout for uploads |
 | `max_retries` | | 2 |
 | `default_headers` | | |
@@ -186,6 +193,10 @@ async with streamablehttp_client(
         await session.initialize()
         tools = await session.list_tools()
 ```
+
+A token or OAuth connection that reaches several workspaces works with one MCP connection: the server lists the
+workspaces in its instructions and in the `list_workspaces` tool, and every other tool takes a `workspace` argument (a
+name or id), so a prompt can say "search the Finance workspace for …".
 
 This library manages the workspace's MCP server:
 
