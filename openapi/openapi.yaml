@@ -1,6 +1,6 @@
 openapi: 3.1.0
 info:
-  title: Nx Platform API
+  title: ctx API
   version: 2026-10-01
   summary: Business context, as an API.
 servers:
@@ -37,12 +37,12 @@ paths:
       operationId: createSourceAuthorization
       summary: Start authorizing a data source
       description: "Step 1 of connecting a source.\n\n- **SharePoint / OneDrive, `mode: tenant`** (default) returns an admin-consent\n\
-        \  `authorize_url`. A Microsoft 365 administrator grants Nx read-only, app-only\n  access to the whole tenant; Microsoft\
+        \  `authorize_url`. A Microsoft 365 administrator grants ctx read-only, app-only\n  access to the whole tenant; Microsoft\
         \ redirects to `redirect_uri` with `tenant`,\n  `admin_consent` and `state`, which you pass to the verify call.\n\
         - **`mode: personal`** (SharePoint / OneDrive, Google Drive, Box) returns a\n  delegated `authorize_url` for the signed-in\
         \ user's own drive; the provider\n  redirects with a `code`.\n- **IAM providers** (Amazon S3) return `external_id`.\
-        \ Create an IAM role Nx can\n  assume with that external ID, granting `s3:GetObject` and `s3:ListBucket` only,\n \
-        \ then pass the bucket and role ARN to the verify call.\n"
+        \ Create an IAM role ctx can\n  assume with that external ID, granting `s3:GetObject` and `s3:ListBucket` only,\n\
+        \  then pass the bucket and role ARN to the verify call.\n"
       x-required-scope: sources:write
       requestBody:
         required: true
@@ -140,7 +140,7 @@ paths:
       - Data sources
       operationId: createSource
       summary: Connect a data source
-      description: 'Step 2 of connecting a source. Nx discovers the data estate (sites, libraries,
+      description: 'Step 2 of connecting a source. ctx discovers the data estate (sites, libraries,
 
         drives) and inventories its metadata; no documents are ingested until you choose
 
@@ -216,7 +216,7 @@ paths:
       - Data sources
       operationId: deleteSource
       summary: Disconnect a data source
-      description: Stops syncing and revokes Nx's access. The source's documents are removed from the workspace.
+      description: Stops syncing and revokes ctx's access. The source's documents are removed from the workspace.
       x-required-scope: sources:write
       responses:
         '200':
@@ -257,7 +257,7 @@ paths:
       - Data sources
       operationId: getSourceEstate
       summary: Summarize the data estate
-      description: Totals and breakdowns of everything Nx can read in the source — selected or not — from the metadata inventory.
+      description: Totals and breakdowns of everything ctx can read in the source — selected or not — from the metadata inventory.
         Partial while `inventory.status` is `running`.
       x-required-scope: sources:read
       responses:
@@ -340,7 +340,7 @@ paths:
       - Data sources
       operationId: updateSourceSelection
       summary: Choose what to ingest
-      description: 'Replace the selection. `mode: all` ingests everything Nx can read; `mode: custom`
+      description: 'Replace the selection. `mode: all` ingests everything ctx can read; `mode: custom`
 
         ingests the nodes in `include` minus those in `exclude` (the nearest rule to a file
 
@@ -444,9 +444,9 @@ paths:
       summary: List sync capacity
       description: 'Microsoft 365 throttles each application per tenant. Large tenants consent to more
 
-        than one Nx application; Nx spreads drives across them. `recommended` is the number
+        than one ctx application; ctx spreads drives across them. `recommended` is the number
 
-        of applications Nx suggests for this estate. Tenant-mode Microsoft 365 sources only.
+        of applications ctx suggests for this estate. Tenant-mode Microsoft 365 sources only.
 
         '
       x-required-scope: sources:read
@@ -464,7 +464,7 @@ paths:
       - Data sources
       operationId: createSourceAppGrant
       summary: Add sync capacity
-      description: Returns a pending grant whose `consent_url` a tenant administrator opens to consent to the next Nx application.
+      description: Returns a pending grant whose `consent_url` a tenant administrator opens to consent to the next ctx application.
         Consent completes through `verifySourceAuthorization`-style redirect parameters on `verifySourceAppGrant`.
       x-required-scope: sources:write
       requestBody:
@@ -489,7 +489,7 @@ paths:
         '404':
           $ref: '#/components/responses/NotFound'
         '422':
-          description: The source is not a tenant-mode Microsoft 365 source, or every Nx application is already granted.
+          description: The source is not a tenant-mode Microsoft 365 source, or every ctx application is already granted.
           content:
             application/json:
               schema:
@@ -788,7 +788,13 @@ paths:
 
         before it without uploading them again. Takes up to 200 document ids, or a filter that matches failed live
 
-        documents only (its `stage` is ignored). Ids of documents that are not failed are skipped. A filter must
+        documents only (its `stage` is ignored). Ids of documents that are not failed are skipped. Documents
+
+        the search index refused (`failure_stage: index`) are never re-parsed: re-parsing gives the same text and
+
+        chunks, and indexing tries them again on its own. A filter skips them (they are not in `matched`); ids that
+
+        name only such documents answer 409. A filter must
 
         send `expected_count`, which is the `matched` of a `dry_run` with the same filter. When the matching
 
@@ -823,7 +829,12 @@ paths:
         '403':
           $ref: '#/components/responses/Forbidden'
         '409':
-          $ref: '#/components/responses/Conflict'
+          description: 'The filter''s matching documents changed since the dry run, or every document the ids name was refused
+            by indexing (`failure_stage: index`), which re-parsing would not change.'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
         '503':
           description: Re-parsing is not available in this deployment.
           content:
@@ -845,10 +856,30 @@ paths:
       - Data
       operationId: getParsedDocument
       summary: Get what the parser read from a document
-      description: The parsed text and what the parser found. 404 while the document is not parsed yet, when it could not
-        be parsed, or once a deleted document's data is removed.
+      description: 'The parsed text and what the parser found. 404 while the document is not parsed yet, when it could not
+        be parsed, or once a deleted document''s data is removed.
+
+
+        `text` holds at most 1 MB of the Markdown, starting at `offset`. To read the rest, call again with `offset` set to
+        the
+
+        `next_offset` of the previous answer until it is `null`; the pieces joined in order are the whole text. For the whole
+
+        text in one response, use `getParsedDocumentText`.
+
+        '
       x-required-permission: ingest_search:view
       x-required-scope: ingest:read
+      parameters:
+      - name: offset
+        in: query
+        required: false
+        description: Byte offset into the Markdown to start from. Use a `next_offset` from a previous answer; an offset inside
+          a character starts at the next whole character. Past the end gives empty `text`.
+        schema:
+          type: integer
+          minimum: 0
+          default: 0
       responses:
         '200':
           description: Parsed output.
@@ -856,8 +887,206 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/DocumentParsed'
+        '400':
+          $ref: '#/components/responses/InvalidRequest'
         '404':
           $ref: '#/components/responses/NotFound'
+        '503':
+          description: The workspace's storage is not available.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+  /v1/documents/{document_id}/parsed/text:
+    parameters:
+    - $ref: '#/components/parameters/WorkspaceHeader'
+    - name: document_id
+      in: path
+      required: true
+      schema:
+        type: string
+        examples:
+        - doc_01J8Z
+    get:
+      tags:
+      - Data
+      operationId: getParsedDocumentText
+      summary: Download the whole parsed text
+      description: The whole text the parser read, as Markdown, streamed with no size limit. 404 and 503 as for `getParsedDocument`.
+      x-required-permission: ingest_search:view
+      x-required-scope: ingest:read
+      responses:
+        '200':
+          description: The whole parsed text. `Content-Disposition` names it `<document_id>.md`.
+          headers:
+            Content-Disposition:
+              schema:
+                type: string
+              description: attachment; filename="<document_id>.md"
+          content:
+            text/markdown:
+              schema:
+                type: string
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '503':
+          description: The workspace's storage is not available.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+  /v1/documents/{document_id}/chunks:
+    parameters:
+    - $ref: '#/components/parameters/WorkspaceHeader'
+    - name: document_id
+      in: path
+      required: true
+      schema:
+        type: string
+        examples:
+        - doc_01J8Z
+    get:
+      tags:
+      - Data
+      operationId: getDocumentChunks
+      summary: List how a document was chunked
+      description: 'The passages (chunks) the document was split into for search, in document order, each with where it sits
+        in the
+
+        parsed text (`getParsedDocument`), its pages, section and heading, why it ends where it does, and its text. A
+
+        search result''s passage is one of these.
+
+
+        Chunks come in pages of `limit`: call again with `cursor` set to the previous `next_cursor` until it is `null`.
+
+        If the document is indexed again between pages, the cursor is a 409 (reason `stale_cursor`): start over without it.
+
+        404 when the document is not in the workspace, is from a source the token cannot read, or is not indexed yet.
+
+        '
+      x-required-permission: ingest_search:view
+      x-required-scope: ingest:read
+      parameters:
+      - name: cursor
+        in: query
+        required: false
+        description: The `next_cursor` of the previous page.
+        schema:
+          type: string
+          maxLength: 4096
+      - name: limit
+        in: query
+        required: false
+        description: Chunks per page.
+        schema:
+          type: integer
+          minimum: 1
+          maximum: 500
+          default: 100
+      responses:
+        '200':
+          description: A page of chunks.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/DocumentChunks'
+        '400':
+          $ref: '#/components/responses/InvalidRequest'
+        '401':
+          $ref: '#/components/responses/Unauthenticated'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '409':
+          $ref: '#/components/responses/Conflict'
+        '429':
+          $ref: '#/components/responses/RateLimited'
+  /v1/documents/{document_id}/matches:
+    parameters:
+    - $ref: '#/components/parameters/WorkspaceHeader'
+    - name: document_id
+      in: path
+      required: true
+      schema:
+        type: string
+        examples:
+        - doc_01J8Z
+    post:
+      tags:
+      - Search
+      operationId: findDocumentMatches
+      summary: Find every match in a document
+      description: 'Every match of one or more patterns in a document''s parsed text (what `getParsedDocument` returns), in
+        document
+
+        order, each with the text around it. Send several patterns together (an id, a case number, a protocol code)
+
+        rather than one call each. The `id` of a `search` result is a document id here.
+
+
+        Matches come in pages. A page holds at most `limit` matches, and it can hold fewer, or none, while
+
+        `next_cursor` is set: a page scans at most 64 MB of text. Keep calling with `next_cursor` until it is `null`.
+
+        Each page is billed as a search.
+
+
+        Each pattern''s matches do not overlap, found from the start of the text as RE2 finds them. Different
+
+        patterns'' matches can overlap. Text over 8 MB is scanned in 8 MB windows: a match longer than 64 KB, or one
+
+        pattern''s overlapping candidates right at a window''s edge, can come out differently from a scan of the whole
+
+        text.
+
+
+        404 when the document is not in the workspace, is from a source the token cannot read, or has no parsed text
+
+        (not parsed yet, or its data was removed). A pattern RE2 cannot compile, or one that matches empty text, is a
+
+        400 on `patterns`.
+
+        '
+      x-required-scope: search:read
+      x-meter: search
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/DocumentMatchesRequest'
+            examples:
+              several:
+                value:
+                  patterns:
+                  - SUBJ-\d{4}
+                  - CASE-\d{6}
+                  - PROT-[A-Z]{2}\d{3}
+                  mode: regex
+                  context_chars: 150
+      responses:
+        '200':
+          description: A page of matches.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/DocumentMatches'
+        '400':
+          $ref: '#/components/responses/InvalidRequest'
+        '401':
+          $ref: '#/components/responses/Unauthenticated'
+        '402':
+          $ref: '#/components/responses/BudgetExceeded'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '409':
+          $ref: '#/components/responses/Conflict'
+        '429':
+          $ref: '#/components/responses/RateLimited'
         '503':
           description: The workspace's storage is not available.
           content:
@@ -1029,6 +1258,16 @@ paths:
                     fields:
                     - text
                     - filename
+                  limit: 10
+              patterns:
+                value:
+                  mode: regex
+                  regex:
+                    patterns:
+                    - SUBJ-\d{4}
+                    - CASE-\d{6}
+                    require: all
+                    passages_per_document: 3
                   limit: 10
       responses:
         '200':
@@ -2227,8 +2466,9 @@ components:
       name: Nx-Workspace
       in: header
       required: false
-      description: Required with session auth on workspace-scoped resources. Ignored with bearer auth (the token's workspace
-        applies).
+      description: Required with session auth on workspace-scoped resources. With bearer auth it picks one of the credential's
+        workspaces; it may be omitted when the credential reaches a single workspace, and naming a workspace outside the credential
+        returns 404.
       schema:
         type: string
         examples:
@@ -2448,7 +2688,7 @@ components:
           type: string
         app_id:
           type: string
-          description: The Nx application (Entra client ID).
+          description: The ctx application (Entra client ID).
         status:
           type: string
           enum:
@@ -2928,7 +3168,8 @@ components:
           - 7y after termination
     CredentialRef:
       type: object
-      description: What authenticated a call — an API token or an OAuth grant (connected app).
+      description: 'What authenticated a call: an API token, an OAuth grant (connected app), or a person signed in to the
+        console.'
       required:
       - type
       - id
@@ -2939,14 +3180,17 @@ components:
           enum:
           - token
           - oauth
+          - console
+          description: '`console`: a call made from the console by a signed-in person; billed like any other.'
         id:
           type: string
-          description: Token ID or grant ID.
+          description: Token ID, grant ID, or (console) the user ID.
         name:
           type: string
           examples:
           - support-copilot-mcp
           - Claude · Lena Chen
+          - Console · Lena Chen
     Cursor:
       type:
       - string
@@ -2981,6 +3225,7 @@ components:
       - modified_at
       - created_by
       - ingest_status
+      - failure_stage
       - parsed_at
       - chunk_count
       - status
@@ -3057,6 +3302,11 @@ components:
             is `failed`, else `null`.'
           examples:
           - The file is larger than 2 GB.
+        failure_stage:
+          oneOf:
+          - $ref: '#/components/schemas/DocumentFailureStage'
+          - type: 'null'
+          description: Which stage failed when `ingest_status` is `failed`, else `null`.
         parsed_at:
           type:
           - string
@@ -3087,6 +3337,83 @@ components:
         created_at:
           type: string
           format: date-time
+    DocumentChunk:
+      type: object
+      required:
+      - ordinal
+      - start
+      - end
+      - page_start
+      - page_end
+      - section
+      - heading
+      - split
+      - text
+      properties:
+        ordinal:
+          type: integer
+          minimum: 0
+          description: Its position among the document's chunks (0 is the first); a search passage's `ordinal`.
+        start:
+          type:
+          - integer
+          - 'null'
+          minimum: 0
+          description: Where it starts in the parsed text, in characters (Unicode code points); `null` when not known.
+        end:
+          type:
+          - integer
+          - 'null'
+          minimum: 0
+          description: Where it ends in the parsed text, in characters. Exclusive.
+        page_start:
+          type:
+          - integer
+          - 'null'
+          description: The first page it is on, when the parser knew pages.
+        page_end:
+          type:
+          - integer
+          - 'null'
+          description: The last page it is on.
+        section:
+          type: string
+          description: The heading breadcrumb it falls under (`Handbook > Leave`); empty when none.
+        heading:
+          type: string
+          description: The heading it starts with, if any.
+        split:
+          type: string
+          description: Why the chunk ends where it does, as the chunker records it (for example a heading, a size limit, or
+            the end of the document); empty when not recorded.
+        text:
+          type: string
+          description: 'Its text as indexed: the parsed text from `start` to `end`, with any context the chunker adds (such
+            as the heading breadcrumb).'
+    DocumentChunks:
+      type: object
+      required:
+      - document_id
+      - total
+      - chunks
+      - next_cursor
+      properties:
+        document_id:
+          type: string
+        total:
+          type: integer
+          minimum: 0
+          description: Every chunk of the document, over all pages.
+        chunks:
+          type: array
+          items:
+            $ref: '#/components/schemas/DocumentChunk'
+          description: This page, in document order.
+        next_cursor:
+          type:
+          - string
+          - 'null'
+          description: Send it as `cursor` for the next page; `null` on the last.
     DocumentDeleteRequest:
       type: object
       description: '`ids` or `filter`, not both.'
@@ -3174,6 +3501,9 @@ components:
           - restored
           - raw_purged
           - data_purged
+          - index_refused
+          description: '`index_refused`: the search index refused the document (`reason` says why, in words). Recorded once
+            per refusal: a refusal repeated with the same reason adds no event.'
         reason:
           type:
           - string
@@ -3190,6 +3520,15 @@ components:
         at:
           type: string
           format: date-time
+    DocumentFailureStage:
+      type: string
+      enum:
+      - parse
+      - index
+      description: 'Which stage a failed document failed at. `index`: the search index refused it (too large, or rejected);
+        its parsed text is kept, `ingest_error` says why, re-parsing would not change it, and indexing tries it again on its
+        own (on an index run at least a day after the refusal, or at once when a new version arrives). `parse`: any other
+        failure (it could not be read, or its index build failed); re-parsing may help.'
     DocumentFilter:
       type: object
       description: Live documents matching every field given. An empty filter matches every live document.
@@ -3220,6 +3559,114 @@ components:
             $ref: '#/components/schemas/Document'
         next_cursor:
           $ref: '#/components/schemas/Cursor'
+    DocumentMatch:
+      type: object
+      required:
+      - pattern
+      - text
+      - start
+      - end
+      - byte_start
+      - byte_end
+      - before
+      - after
+      properties:
+        pattern:
+          type: integer
+          minimum: 0
+          description: The index in `patterns` of the pattern that matched.
+        text:
+          type: string
+          description: The matched text.
+        start:
+          type: integer
+          minimum: 0
+          description: Where the match starts in the parsed text, in characters (Unicode code points).
+        end:
+          type: integer
+          minimum: 0
+          description: Where it ends, in characters. Exclusive.
+        byte_start:
+          type: integer
+          minimum: 0
+          description: 'Where the match starts in the parsed text, in bytes of its UTF-8: send it as `offset` to `getParsedDocument`
+            to read on from there.'
+        byte_end:
+          type: integer
+          minimum: 0
+          description: Where it ends, in bytes. Exclusive.
+        before:
+          type: string
+          description: Up to `context_chars` characters just before the match.
+        after:
+          type: string
+          description: Up to `context_chars` characters just after the match.
+    DocumentMatches:
+      type: object
+      required:
+      - document_id
+      - took_ms
+      - matches
+      - next_cursor
+      properties:
+        document_id:
+          type: string
+        took_ms:
+          type: integer
+        cost_usd:
+          type: number
+        matches:
+          type: array
+          items:
+            $ref: '#/components/schemas/DocumentMatch'
+          description: This page, in document order (by `start`, then `pattern`, then `end`).
+        next_cursor:
+          type:
+          - string
+          - 'null'
+          description: Send it as `cursor` for the rest; `null` once the whole text is scanned.
+    DocumentMatchesRequest:
+      type: object
+      required:
+      - patterns
+      properties:
+        patterns:
+          type: array
+          minItems: 1
+          maxItems: 20
+          items:
+            type: string
+            minLength: 1
+            maxLength: 1000
+          description: What to find. In `regex` mode, RE2 regular expressions (no backreferences or lookaround); in `literal`
+            mode, exact text. A match's `pattern` is its index here.
+        mode:
+          type: string
+          enum:
+          - regex
+          - literal
+          default: regex
+        case_sensitive:
+          type: boolean
+          default: true
+          description: 'In `regex` mode, inline flags work too: `(?i)` makes one pattern case-insensitive.'
+        context_chars:
+          type: integer
+          minimum: 0
+          maximum: 2000
+          default: 150
+          description: Characters of text to return on each side of a match (`before`, `after`), fewer at the ends of the
+            text.
+        limit:
+          type: integer
+          minimum: 1
+          maximum: 1000
+          default: 100
+          description: The most matches a page holds.
+        cursor:
+          type: string
+          description: The `next_cursor` of the previous page. Send the same `patterns`, `mode`, `case_sensitive` and `context_chars`;
+            a cursor from another call is a 400 on `cursor`. A document parsed again since the previous page is a 409.
     DocumentParsed:
       type: object
       description: What the parser read from a document.
@@ -3232,6 +3679,9 @@ components:
       - text
       - chars
       - truncated
+      - offset
+      - next_offset
+      - bytes
       properties:
         parser:
           type: string
@@ -3252,13 +3702,24 @@ components:
           description: Fields the parser found (title, author, …), as the index uses them.
         text:
           type: string
-          description: The text as Markdown, the first 1 MB at most.
+          description: Up to 1 MB of the text as Markdown, starting at `offset`.
         chars:
           type: integer
           description: Length of the whole text in characters.
+        bytes:
+          type: integer
+          description: Size of the whole text in bytes (UTF-8).
+        offset:
+          type: integer
+          description: Byte offset of `text` in the whole text.
+        next_offset:
+          type:
+          - integer
+          - 'null'
+          description: 'Where the rest starts: pass it as `offset` to read on. `null` when `text` reaches the end.'
         truncated:
           type: boolean
-          description: '`text` holds only the first 1 MB.'
+          description: More text follows `text` (`next_offset` is set).
     DocumentReparseRequest:
       type: object
       description: '`ids` or `filter`, not both.'
@@ -4120,7 +4581,7 @@ components:
         url:
           type: string
           format: uri
-          description: A URL (typically signed) Nx fetches once.
+          description: A URL (typically signed) ctx fetches once.
         metadata:
           type: object
           additionalProperties:
@@ -4401,10 +4862,13 @@ components:
       type: string
       enum:
       - search_records
+      - find_in_document
       - get_record
       - list_sources
       - summarize_records
       - ingest_document
+      - create_api_token
+      - get_api_docs
     Meter:
       type: string
       enum:
@@ -6102,7 +6566,7 @@ components:
           type: number
           examples:
           - 1.2
-          description: 'The price in force: the organization''s own price where NVISIONx agreed one, else the list price.'
+          description: 'The price in force: the organization''s own price where ctx agreed one, else the list price.'
     RecordRetention:
       type: object
       required:
@@ -6156,6 +6620,35 @@ components:
           default:
           - text
           description: '`text`: the passage text · `filename`: the document''s file name · `path`: its path in the source.'
+        passages_per_document:
+          type: integer
+          minimum: 1
+          maximum: 20
+          default: 1
+          description: '`search` only (a 400 elsewhere): the most matching passages each result carries in `passages`, most
+            matches first. Whatever it is, `document_match_count` and `document_passage_count` count all of the document''s
+            matches. For every match of one document, with the text around each, use `findDocumentMatches`.'
+        patterns:
+          type: array
+          minItems: 1
+          maxItems: 10
+          items:
+            type: string
+            minLength: 1
+            maxLength: 1000
+          description: '`search` only (a 400 elsewhere), instead of `query`: several RE2 patterns searched together. Each
+            is matched and counted on its own (different patterns'' matches may overlap, and all are counted); a passage matches
+            when any pattern does, and `match_count` and the document counts are sums over the patterns, with `pattern_counts`
+            and `document_pattern_counts` giving each pattern''s share. Results rank by the sum. A bad pattern is a 400 on
+            `regex.patterns` naming its index.'
+        require:
+          type: string
+          enum:
+          - any
+          - all
+          description: 'Only with `patterns`; `any` when left out. `any`: documents where any pattern matches · `all`: only
+            documents where every pattern matches, in any of their passages (not necessarily the same one). `total` counts
+            the documents that qualify.'
     RetentionStatus:
       type: string
       enum:
@@ -6177,6 +6670,9 @@ components:
       - sources:write
       - billing:read
       - billing:write
+      - tokens:issue
+      description: '`tokens:issue` lets an MCP client mint short-lived API tokens (`create_api_token`). It can be granted
+        at OAuth consent or on an API token created in the console, and is never carried by an issued token.'
     SearchCompareError:
       type: object
       required:
@@ -6190,8 +6686,8 @@ components:
           - unavailable
           - failed
           description: '`timeout`: the engine did not answer in time · `unavailable`: the engine cannot answer for this workspace
-            right now (the next-generation engine is not available for it, or the current engine is still starting up) · `failed`:
-            anything else.'
+            (the next-generation engine is not available for it, the current engine is still starting up, or, for `baseline`,
+            the workspace now uses only the next-generation engine) · `failed`: anything else.'
         message:
           type: string
     SearchCompareRequest:
@@ -6340,16 +6836,44 @@ components:
           - $ref: '#/components/schemas/SearchCompareError'
           - type: 'null'
           description: Why this side has no results; `null` when it answered.
-    SearchRequest:
+    SearchPassage:
       type: object
       required:
-      - query
+      - ordinal
+      - snippet
+      - match_count
+      - highlights
+      description: One matching passage of a document.
+      properties:
+        ordinal:
+          type: integer
+          minimum: 0
+          description: The passage's position in the document (0 is its first).
+        snippet:
+          type: string
+          description: The passage, cut around its first match.
+        match_count:
+          type: integer
+          description: How many times the pattern matched in this passage, over the searched fields (with `regex.patterns`,
+            all of them).
+        pattern_counts:
+          type: array
+          items:
+            type: integer
+          description: 'With `regex.patterns`: `match_count` per pattern, in the order of `patterns`.'
+        highlights:
+          type: array
+          items:
+            $ref: '#/components/schemas/SnippetRange'
+          description: The parts of `snippet` that matched, as character offsets (Unicode code points).
+    SearchRequest:
+      type: object
       properties:
         query:
           type: string
           minLength: 1
-          description: Natural-language or keyword query. In `regex` mode, an RE2 regular expression of at most 1,000 characters
-            (no backreferences or lookaround).
+          description: Natural-language or keyword query, required outside `regex` mode. In `regex` mode, an RE2 regular expression
+            of at most 1,000 characters (no backreferences or lookaround); send it or `regex.patterns`, not both.
         sources:
           type: array
           items:
@@ -6369,11 +6893,23 @@ components:
             and keeps to the sources and permissions of the token.'
         regex:
           $ref: '#/components/schemas/RegexOptions'
+        dense_mode:
+          type: string
+          enum:
+          - auto
+          - full
+          - fast
+          default: auto
+          description: 'How the semantic part of a search reads the vectors (`semantic` mode, and the semantic half of `hybrid`;
+            `keyword` and `regex` ignore it) · `full`: every vector, exact · `fast`: an approximate index (IVF lists and RaBitQ
+            codes) that reads a small share of the vectors and may miss a few close results · `auto`: `full` for smaller workspaces,
+            `fast` for large ones. A `full` search of a very large workspace takes longer, and one that runs out of time answers
+            from the part of the workspace it reached.'
         cursor:
           type: string
-          description: The `next_cursor` of the previous page, in any mode. Send the same `query`, `mode`, `regex`, `sources`,
-            `filters` and `limit` as that page; a cursor from another search is a 400 on `cursor`. Each page runs the search
-            again, so documents changed since the previous page may move.
+          description: The `next_cursor` of the previous page, in any mode. Send the same `query`, `mode`, `regex`, `dense_mode`,
+            `sources`, `filters` and `limit` as that page; a cursor from another search is a 400 on `cursor`. Each page runs
+            the search again, so documents changed since the previous page may move.
         filters:
           type: object
           properties:
@@ -6482,6 +7018,34 @@ components:
             $ref: '#/components/schemas/SnippetRange'
           description: 'Regex mode: the parts of `snippet` that matched, as character offsets (Unicode code points). Empty
             in the other modes.'
+        document_match_count:
+          type: integer
+          description: 'Regex mode: how many times the pattern matched in the whole document, over every passage and the searched
+            fields.'
+        document_passage_count:
+          type: integer
+          description: 'Regex mode: how many of the document''s passages matched.'
+        counts_are_lower_bound:
+          type: boolean
+          description: 'Regex mode: true when the engine stopped counting early (as `total_is_lower_bound`), so the document
+            may have more matches than `document_match_count`.'
+        pattern_counts:
+          type: array
+          items:
+            type: integer
+          description: 'With `regex.patterns`: `match_count` per pattern, in the order of `patterns`.'
+        document_pattern_counts:
+          type: array
+          items:
+            type: integer
+          description: 'With `regex.patterns`: `document_match_count` per pattern, in the order of `patterns`. With `require:
+            all`, none is 0.'
+        passages:
+          type: array
+          items:
+            $ref: '#/components/schemas/SearchPassage'
+          description: 'Regex mode: the document''s matching passages, most matches first, at most `regex.passages_per_document`.
+            The first is the best passage, the one `snippet` shows.'
     SelectionPreview:
       type: object
       required:
@@ -6522,6 +7086,10 @@ components:
           type: integer
           minimum: 0
           description: Exclusive.
+        pattern:
+          type: integer
+          minimum: 0
+          description: 'With `regex.patterns`: the index of the pattern that matched here.'
     Source:
       type: object
       required:
@@ -7114,4 +7682,5 @@ components:
       type: http
       scheme: bearer
       bearerFormat: nx_live_… | nx_test_…
-      description: Workspace-bound API token. Create one under API tokens; the secret is shown once.
+      description: Workspace-bound API token. Create one under API tokens; the secret is shown once. A token that reaches
+        several workspaces needs the `Nx-Workspace` header on workspace-scoped calls.

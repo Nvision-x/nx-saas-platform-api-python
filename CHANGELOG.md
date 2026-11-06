@@ -1,9 +1,27 @@
 # Changelog
 
-## Unreleased
+## 0.3.0
 
-Tokens that reach several workspaces: the `workspace` client option (or `NX_WORKSPACE`) sends `Nx-Workspace` on every
-call, and `with_options(workspace=…)` switches workspace on a copy that shares the connection pool.
+Models regenerated from the current API spec.
+
+- Search: `mode="regex"` is now accepted by `search`, with `regex=` options (a `RegexOptions` or a dict) including
+  `patterns` (several RE2 patterns at once, instead of `query`), `require` (`any` or `all`) and
+  `passages_per_document`. Results carry `passages`, per-document counts (`document_match_count`,
+  `document_passage_count`, `document_pattern_counts`, `counts_are_lower_bound`), per-pattern `pattern_counts`, and
+  each highlight's `pattern`. New `dense_mode` (`auto`, `full`, `fast`) and `cursor` for paging any mode with
+  `next_cursor`. `query` is optional, since `regex.patterns` can replace it.
+- Documents: `documents.matches` finds every match of several patterns in one document's parsed text, paged;
+  `documents.chunks` lists how a document was chunked for search, paged; `documents.parsed(offset=)` reads the parsed
+  text past the first 1 MB, and `documents.parsed_text` downloads all of it; `documents.reparse` re-parses failed
+  documents by id or filter. Documents carry `failure_stage`.
+- `jobs.summary()` and `models.list()`.
+- Tokens that reach several workspaces: the `workspace` client option (or `NX_WORKSPACE`) sends `Nx-Workspace` on
+  every call, and `with_options(workspace=…)` switches workspace on a copy that shares the connection pool. Setting
+  the header through `default_headers` keeps working.
+- Pages expose the whole response of each page as `page.body` (for example `total` on chunks, `cost_usd` on
+  matches).
+- The README covers authentication, workspaces and short-lived tokens issued by the MCP server's `create_api_token`
+  tool.
 
 ## 0.2.0
 

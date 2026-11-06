@@ -5,7 +5,7 @@ import time
 
 from nvisionx._base_client import RequestOptions, path
 from nvisionx._errors import JobTimeoutError
-from nvisionx._models import Job, JobList, JobStatus
+from nvisionx._models import Job, JobList, JobStatus, JobSummary
 from nvisionx._pagination import AsyncPaginator, SyncPage
 from nvisionx.resources._resource import AsyncResource, SyncResource
 
@@ -26,6 +26,9 @@ class Jobs(SyncResource):
 
     def get(self, job_id: str) -> Job:
         return self._client.request(RequestOptions("GET", path("v1/jobs/{id}", id=job_id)), Job)
+
+    def summary(self) -> JobSummary:
+        return self._client.request(RequestOptions("GET", "v1/jobs/summary"), JobSummary)
 
     def wait(self, job_id: str, *, poll_interval: float = 2.0, timeout: float | None = 600.0) -> Job:
         deadline = None if timeout is None else time.monotonic() + timeout
@@ -52,6 +55,9 @@ class AsyncJobs(AsyncResource):
 
     async def get(self, job_id: str) -> Job:
         return await self._client.request(RequestOptions("GET", path("v1/jobs/{id}", id=job_id)), Job)
+
+    async def summary(self) -> JobSummary:
+        return await self._client.request(RequestOptions("GET", "v1/jobs/summary"), JobSummary)
 
     async def wait(self, job_id: str, *, poll_interval: float = 2.0, timeout: float | None = 600.0) -> Job:
         deadline = None if timeout is None else time.monotonic() + timeout

@@ -24,6 +24,7 @@ from nvisionx.resources.chat import AsyncChat, Chat
 from nvisionx.resources.documents import AsyncDocuments, Documents
 from nvisionx.resources.jobs import AsyncJobs, Jobs
 from nvisionx.resources.mcp import AsyncMcp, Mcp
+from nvisionx.resources.models import AsyncModels, Models
 from nvisionx.resources.search import AsyncSearch, Search
 from nvisionx.resources.sources import AsyncSources, Sources
 
@@ -63,6 +64,7 @@ class Nx(BaseClient):
     search: Search
     sources: Sources
     mcp: Mcp
+    models: Models
     agents: Agents
     chat: Chat
     billing: Billing
@@ -97,6 +99,7 @@ class Nx(BaseClient):
         self.search = Search(self)
         self.sources = Sources(self)
         self.mcp = Mcp(self)
+        self.models = Models(self)
         self.agents = Agents(self)
         self.chat = Chat(self)
         self.billing = Billing(self)
@@ -166,6 +169,7 @@ class AsyncNx(BaseClient):
     search: AsyncSearch
     sources: AsyncSources
     mcp: AsyncMcp
+    models: AsyncModels
     agents: AsyncAgents
     chat: AsyncChat
     billing: AsyncBilling
@@ -200,6 +204,7 @@ class AsyncNx(BaseClient):
         self.search = AsyncSearch(self)
         self.sources = AsyncSources(self)
         self.mcp = AsyncMcp(self)
+        self.models = AsyncModels(self)
         self.agents = AsyncAgents(self)
         self.chat = AsyncChat(self)
         self.billing = AsyncBilling(self)

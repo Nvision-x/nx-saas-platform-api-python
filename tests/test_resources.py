@@ -13,7 +13,7 @@ import respx
 from nvisionx import AsyncNx, JobTimeoutError, NotFoundError, Nx, StreamError
 from nvisionx._base_client import AGENT_TIMEOUT
 from nvisionx.resources import jobs as jobs_module
-from nvisionx.types import BudgetScope, DocumentFilter, SearchFilters
+from nvisionx.types import BudgetScope, DocumentFilter, RegexOptions, SearchFilters
 
 from .conftest import chat_message, conversation, error, job
 
@@ -383,6 +383,7 @@ def document(**overrides: Any) -> dict[str, Any]:
         "modified_at": None,
         "created_by": None,
         "ingest_status": "ingested",
+        "failure_stage": None,
         "parsed_at": None,
         "chunk_count": 12,
         "status": "active",
@@ -421,6 +422,9 @@ def test_documents_get_parsed_summary_delete(client: Nx, api: respx.MockRouter) 
             "metadata": {"title": "MSA"},
             "text": "# Master services agreement",
             "chars": 27,
+            "bytes": 27,
+            "offset": 0,
+            "next_offset": None,
             "truncated": False,
         }
     )
@@ -475,3 +479,265 @@ async def test_async_documents(async_client: AsyncNx, api: respx.MockRouter) -> 
     assert [d.name async for d in async_client.documents.list()] == ["msa.pdf"]
     with pytest.raises(NotFoundError):
         await async_client.documents.parsed("doc_1")
+
+
+def search_result(**overrides: Any) -> dict[str, Any]:
+    return {
+        "id": "doc_1",
+        "title": "Trial protocol",
+        "path": "/trials/protocol.pdf",
+        "source_id": "src_1",
+        "record_type": "protocol",
+        "owner": "Clinical",
+        "sensitivity": "confidential",
+        "score": 0.9,
+        "snippet": "SUBJ-0042 enrolled under PROT-AB123",
+        "retention": {"status": "active"},
+        **overrides,
+    }
+
+
+def test_search_regex_patterns(client: Nx, api: respx.MockRouter) -> None:
+    passage = {
+        "ordinal": 3,
+        "snippet": "SUBJ-0042 enrolled under PROT-AB123",
+        "match_count": 2,
+        "pattern_counts": [1, 1],
+        "highlights": [{"start": 0, "end": 9, "pattern": 0}, {"start": 25, "end": 35, "pattern": 1}],
+    }
+    route = api.post("/v1/search").respond(
+        json={
+            "took_ms": 7,
+            "total": 1,
+            "total_is_lower_bound": False,
+            "results": [
+                search_result(
+                    match_count=2,
+                    pattern_counts=[1, 1],
+                    document_match_count=5,
+                    document_passage_count=3,
+                    document_pattern_counts=[3, 2],
+                    counts_are_lower_bound=False,
+                    highlights=passage["highlights"],
+                    passages=[passage],
+                )
+            ],
+            "next_cursor": "c2",
+        }
+    )
+
+    response = client.search(
+        mode="regex",
+        regex=RegexOptions(patterns=[r"SUBJ-\d{4}", r"PROT-[A-Z]{2}\d{3}"], require="all", passages_per_document=3),
+        limit=5,
+    )
+
+    assert body(route) == {
+        "mode": "regex",
+        "regex": {"patterns": [r"SUBJ-\d{4}", r"PROT-[A-Z]{2}\d{3}"], "require": "all", "passages_per_document": 3},
+        "limit": 5,
+    }
+    result = response.results[0]
+    assert result.document_pattern_counts == [3, 2]
+    assert result.document_passage_count == 3
+    assert result.passages is not None
+    assert result.passages[0].ordinal == 3
+    assert [h.pattern for h in result.passages[0].highlights] == [0, 1]
+    assert response.next_cursor == "c2"
+
+
+def test_search_dense_mode_and_cursor(client: Nx, api: respx.MockRouter) -> None:
+    route = api.post("/v1/search").respond(
+        json={"took_ms": 3, "total": 0, "total_is_lower_bound": False, "results": [], "next_cursor": None}
+    )
+    client.search("leave policy", dense_mode="fast", regex={"case_sensitive": False}, cursor="c2")
+    assert body(route) == {
+        "query": "leave policy",
+        "regex": {"case_sensitive": False},
+        "dense_mode": "fast",
+        "cursor": "c2",
+    }
+
+
+def match(pattern: int, start: int, text: str) -> dict[str, Any]:
+    end = start + len(text)
+    return {
+        "pattern": pattern,
+        "text": text,
+        "start": start,
+        "end": end,
+        "byte_start": start,
+        "byte_end": end,
+        "before": "…",
+        "after": "…",
+    }
+
+
+def test_documents_matches_pages(client: Nx, api: respx.MockRouter) -> None:
+    route = api.post("/v1/documents/doc_1/matches").mock(
+        side_effect=[
+            httpx.Response(
+                200,
+                json={
+                    "document_id": "doc_1",
+                    "took_ms": 2,
+                    "matches": [match(0, 10, "SUBJ-0042")],
+                    "next_cursor": "c2",
+                    "cost_usd": 0.001,
+                },
+            ),
+            httpx.Response(200, json={"document_id": "doc_1", "took_ms": 2, "matches": [], "next_cursor": "c3"}),
+            httpx.Response(
+                200,
+                json={
+                    "document_id": "doc_1",
+                    "took_ms": 1,
+                    "matches": [match(1, 90, "CASE-123456")],
+                    "next_cursor": None,
+                },
+            ),
+        ]
+    )
+
+    page = client.documents.matches("doc_1", patterns=[r"SUBJ-\d{4}", r"CASE-\d{6}"], context_chars=40, limit=1)
+    assert page.body.cost_usd == 0.001
+    assert [(m.pattern, m.text) for m in page] == [(0, "SUBJ-0042"), (1, "CASE-123456")]
+    first, second, third = (json.loads(call.request.content) for call in route.calls)
+    assert first == {"patterns": [r"SUBJ-\d{4}", r"CASE-\d{6}"], "context_chars": 40, "limit": 1}
+    assert second == {**first, "cursor": "c2"}
+    assert third == {**first, "cursor": "c3"}
+
+
+def test_documents_matches_single_pattern(client: Nx, api: respx.MockRouter) -> None:
+    route = api.post("/v1/documents/doc_1/matches").respond(
+        json={"document_id": "doc_1", "took_ms": 1, "matches": [], "next_cursor": None}
+    )
+    assert list(client.documents.matches("doc_1", patterns="Northwind", mode="literal", case_sensitive=False)) == []
+    assert body(route) == {"patterns": ["Northwind"], "mode": "literal", "case_sensitive": False}
+
+
+def chunk(ordinal: int) -> dict[str, Any]:
+    return {
+        "ordinal": ordinal,
+        "start": ordinal * 100,
+        "end": ordinal * 100 + 100,
+        "page_start": 1,
+        "page_end": 1,
+        "section": "Handbook > Leave",
+        "heading": "Leave",
+        "split": "heading",
+        "text": f"chunk {ordinal}",
+    }
+
+
+def test_documents_chunks(client: Nx, api: respx.MockRouter) -> None:
+    route = api.get("/v1/documents/doc_1/chunks").mock(
+        side_effect=[
+            httpx.Response(
+                200, json={"document_id": "doc_1", "total": 3, "chunks": [chunk(0), chunk(1)], "next_cursor": "c2"}
+            ),
+            httpx.Response(200, json={"document_id": "doc_1", "total": 3, "chunks": [chunk(2)], "next_cursor": None}),
+        ]
+    )
+    page = client.documents.chunks("doc_1", limit=2)
+    assert page.body.total == 3
+    assert [c.ordinal for c in page] == [0, 1, 2]
+    assert route.calls[0].request.url.params == httpx.QueryParams({"limit": "2"})
+    assert route.calls[1].request.url.params == httpx.QueryParams({"limit": "2", "cursor": "c2"})
+
+
+def test_documents_parsed_offset_and_text(client: Nx, api: respx.MockRouter) -> None:
+    parsed = api.get("/v1/documents/doc_1/parsed").respond(
+        json={
+            "parser": "docling",
+            "parser_version": "2.1",
+            "page_count": 3,
+            "language": "en",
+            "metadata": {},
+            "text": "rest",
+            "chars": 4,
+            "bytes": 2048,
+            "offset": 1024,
+            "next_offset": None,
+            "truncated": False,
+        }
+    )
+    text = api.get("/v1/documents/doc_1/parsed/text").respond(
+        headers={"Content-Type": "text/markdown"}, text="# Master services agreement\n"
+    )
+    assert client.documents.parsed("doc_1", offset=1024).offset == 1024
+    assert parsed.calls.last.request.url.params == httpx.QueryParams({"offset": "1024"})
+    assert client.documents.parsed_text("doc_1") == "# Master services agreement\n"
+    assert text.calls.last.request.headers["Accept"] == "text/markdown"
+
+
+def test_documents_reparse(client: Nx, api: respx.MockRouter) -> None:
+    route = api.post("/v1/documents/reparse").respond(json={"matched": 3, "queued": 0})
+    preview = client.documents.reparse(filter={"source_id": "src_1"}, dry_run=True)
+    assert preview.matched == 3
+    assert body(route) == {"filter": {"source_id": "src_1"}, "dry_run": True}
+    client.documents.reparse(ids=["doc_1"])
+    assert body(route) == {"ids": ["doc_1"]}
+
+
+def test_jobs_summary_and_models(client: Nx, api: respx.MockRouter) -> None:
+    api.get("/v1/jobs/summary").respond(
+        json={
+            "jobs": {"queued": 1, "running": 0, "completed": 4, "failed": 0},
+            "pending_documents": 2,
+            "oldest_pending_at": None,
+            "hourly": [{"start": "2026-10-01T12:00:00Z", "added": 3, "parsed": 2, "searchable": 1}],
+            "indexing": None,
+            "search_upgrade": None,
+        }
+    )
+    api.get("/v1/models").respond(
+        json={
+            "data": [
+                {
+                    "id": "model-a",
+                    "name": "Model A",
+                    "vendor": "Vendor",
+                    "roles": [],
+                    "status": "available",
+                    "input_price_per_1m_usd": 3.0,
+                    "output_price_per_1m_usd": 15.0,
+                    "allowed": True,
+                    "blocked_by": None,
+                }
+            ],
+            "preferred": ["model-a"],
+            "router": None,
+        }
+    )
+    assert client.jobs.summary().pending_documents == 2
+    assert client.models.list().data[0].allowed is True
+
+
+async def test_async_documents_matches_and_chunks(async_client: AsyncNx, api: respx.MockRouter) -> None:
+    api.post("/v1/documents/doc_1/matches").mock(
+        side_effect=[
+            httpx.Response(200, json={"document_id": "doc_1", "took_ms": 1, "matches": [], "next_cursor": "c2"}),
+            httpx.Response(
+                200,
+                json={"document_id": "doc_1", "took_ms": 1, "matches": [match(0, 5, "SUBJ-0001")], "next_cursor": None},
+            ),
+        ]
+    )
+    api.get("/v1/documents/doc_1/chunks").respond(
+        json={"document_id": "doc_1", "total": 1, "chunks": [chunk(0)], "next_cursor": None}
+    )
+    assert [m.text async for m in async_client.documents.matches("doc_1", patterns=[r"SUBJ-\d{4}"])] == ["SUBJ-0001"]
+    page = await async_client.documents.chunks("doc_1")
+    assert page.body.total == 1
+    assert [c.text for c in page.data] == ["chunk 0"]
+    api.get("/v1/documents/doc_1/parsed/text").respond(text="# MSA")
+    assert await async_client.documents.parsed_text("doc_1") == "# MSA"
+
+
+async def test_async_search_regex(async_client: AsyncNx, api: respx.MockRouter) -> None:
+    route = api.post("/v1/search").respond(
+        json={"took_ms": 2, "total": 0, "total_is_lower_bound": False, "results": []}
+    )
+    await async_client.search(r"SUBJ-\d{4}", mode="regex", regex={"passages_per_document": 5})
+    assert body(route) == {"query": r"SUBJ-\d{4}", "mode": "regex", "regex": {"passages_per_document": 5}}
