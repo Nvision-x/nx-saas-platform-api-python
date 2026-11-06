@@ -45,6 +45,7 @@ dev = [
     "mypy>=1.11",
     "datamodel-code-generator>=0.83",
     "pyyaml>=6",
+    "build>=1.2",
 ]
 
 [tool.hatch.version]

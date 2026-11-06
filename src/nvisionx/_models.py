@@ -25,7 +25,7 @@ class AppGrant(NxModel):
     id: str
     app_id: str
     """
-    The Nx application (Entra client ID).
+    The ctx application (Entra client ID).
     """
     status: Annotated[Literal["pending", "consented", "revoked"], Open]
     consent_url: str | None = None
@@ -126,15 +126,18 @@ class ChatNotice(NxModel):
 
 class CredentialRef(NxModel):
     """
-    What authenticated a call — an API token or an OAuth grant (connected app).
+    What authenticated a call: an API token, an OAuth grant (connected app), or a person signed in to the console.
     """
 
-    type: Annotated[Literal["token", "oauth"], Open]
+    type: Annotated[Literal["token", "oauth", "console"], Open]
+    """
+    `console`: a call made from the console by a signed-in person; billed like any other.
+    """
     id: str
     """
-    Token ID or grant ID.
+    Token ID, grant ID, or (console) the user ID.
     """
-    name: Annotated[str, Field(examples=["support-copilot-mcp", "Claude · Lena Chen"])]
+    name: Annotated[str, Field(examples=["support-copilot-mcp", "Claude · Lena Chen", "Console · Lena Chen"])]
 
 
 Cursor = TypeAliasType("Cursor", str | None)
@@ -146,6 +149,61 @@ Pass as `cursor` to fetch the next page. `null` on the last page.
 class Deleted(NxModel):
     id: str
     deleted: Annotated[Literal[True], Open]
+
+
+class DocumentChunk(NxModel):
+    ordinal: Annotated[int, Field(ge=0)]
+    """
+    Its position among the document's chunks (0 is the first); a search passage's `ordinal`.
+    """
+    start: Annotated[int | None, Field(ge=0)]
+    """
+    Where it starts in the parsed text, in characters (Unicode code points); `null` when not known.
+    """
+    end: Annotated[int | None, Field(ge=0)]
+    """
+    Where it ends in the parsed text, in characters. Exclusive.
+    """
+    page_start: int | None
+    """
+    The first page it is on, when the parser knew pages.
+    """
+    page_end: int | None
+    """
+    The last page it is on.
+    """
+    section: str
+    """
+    The heading breadcrumb it falls under (`Handbook > Leave`); empty when none.
+    """
+    heading: str
+    """
+    The heading it starts with, if any.
+    """
+    split: str
+    """
+    Why the chunk ends where it does, as the chunker records it (for example a heading, a size limit, or the end of the document); empty when not recorded.
+    """
+    text: str
+    """
+    Its text as indexed: the parsed text from `start` to `end`, with any context the chunker adds (such as the heading breadcrumb).
+    """
+
+
+class DocumentChunks(NxModel):
+    document_id: str
+    total: Annotated[int, Field(ge=0)]
+    """
+    Every chunk of the document, over all pages.
+    """
+    chunks: list[DocumentChunk]
+    """
+    This page, in document order.
+    """
+    next_cursor: str | None
+    """
+    Send it as `cursor` for the next page; `null` on the last.
+    """
 
 
 class DocumentDeleteResult(NxModel):
@@ -180,11 +238,98 @@ DocumentDeletedReason = TypeAliasType(
 
 
 class DocumentEvent(NxModel):
-    kind: Annotated[Literal["added", "modified", "deleted", "restored", "raw_purged", "data_purged"], Open]
+    kind: Annotated[
+        Literal["added", "modified", "deleted", "restored", "raw_purged", "data_purged", "index_refused"], Open
+    ]
+    """
+    `index_refused`: the search index refused the document (`reason` says why, in words). Recorded once per refusal: a refusal repeated with the same reason adds no event.
+    """
     reason: str | None
     version: str | None
     size: int | None
     at: AwareDatetime
+
+
+DocumentFailureStage = TypeAliasType("DocumentFailureStage", Annotated[Literal["parse", "index"], Open])
+"""
+Which stage a failed document failed at. `index`: the search index refused it (too large, or rejected); its parsed text is kept, `ingest_error` says why, re-parsing would not change it, and indexing tries it again on its own (on an index run at least a day after the refusal, or at once when a new version arrives). `parse`: any other failure (it could not be read, or its index build failed); re-parsing may help.
+"""
+
+
+class DocumentMatch(NxModel):
+    pattern: Annotated[int, Field(ge=0)]
+    """
+    The index in `patterns` of the pattern that matched.
+    """
+    text: str
+    """
+    The matched text.
+    """
+    start: Annotated[int, Field(ge=0)]
+    """
+    Where the match starts in the parsed text, in characters (Unicode code points).
+    """
+    end: Annotated[int, Field(ge=0)]
+    """
+    Where it ends, in characters. Exclusive.
+    """
+    byte_start: Annotated[int, Field(ge=0)]
+    """
+    Where the match starts in the parsed text, in bytes of its UTF-8: send it as `offset` to `getParsedDocument` to read on from there.
+    """
+    byte_end: Annotated[int, Field(ge=0)]
+    """
+    Where it ends, in bytes. Exclusive.
+    """
+    before: str
+    """
+    Up to `context_chars` characters just before the match.
+    """
+    after: str
+    """
+    Up to `context_chars` characters just after the match.
+    """
+
+
+class DocumentMatches(NxModel):
+    document_id: str
+    took_ms: int
+    cost_usd: float | None = None
+    matches: list[DocumentMatch]
+    """
+    This page, in document order (by `start`, then `pattern`, then `end`).
+    """
+    next_cursor: str | None
+    """
+    Send it as `cursor` for the rest; `null` once the whole text is scanned.
+    """
+
+
+Pattern = TypeAliasType("Pattern", Annotated[str, Field(max_length=1000, min_length=1)])
+
+
+class DocumentMatchesRequest(NxModel):
+    patterns: Annotated[list[Pattern], Field(max_length=20, min_length=1)]
+    """
+    What to find. In `regex` mode, RE2 regular expressions (no backreferences or lookaround); in `literal` mode, exact text. A match's `pattern` is its index here.
+    """
+    mode: Annotated[Literal["regex", "literal"], Open] | None = "regex"
+    case_sensitive: bool | None = True
+    """
+    In `regex` mode, inline flags work too: `(?i)` makes one pattern case-insensitive.
+    """
+    context_chars: Annotated[int | None, Field(ge=0, le=2000)] = 150
+    """
+    Characters of text to return on each side of a match (`before`, `after`), fewer at the ends of the text.
+    """
+    limit: Annotated[int | None, Field(ge=1, le=1000)] = 100
+    """
+    The most matches a page holds.
+    """
+    cursor: str | None = None
+    """
+    The `next_cursor` of the previous page. Send the same `patterns`, `mode`, `case_sensitive` and `context_chars`; a cursor from another call is a 400 on `cursor`. A document parsed again since the previous page is a 409.
+    """
 
 
 class DocumentParsed(NxModel):
@@ -205,15 +350,27 @@ class DocumentParsed(NxModel):
     """
     text: str
     """
-    The text as Markdown, the first 1 MB at most.
+    Up to 1 MB of the text as Markdown, starting at `offset`.
     """
     chars: int
     """
     Length of the whole text in characters.
     """
+    bytes: int
+    """
+    Size of the whole text in bytes (UTF-8).
+    """
+    offset: int
+    """
+    Byte offset of `text` in the whole text.
+    """
+    next_offset: int | None
+    """
+    Where the rest starts: pass it as `offset` to read on. `null` when `text` reaches the end.
+    """
     truncated: bool
     """
-    `text` holds only the first 1 MB.
+    More text follows `text` (`next_offset` is set).
     """
 
 
@@ -496,7 +653,7 @@ class IngestUploadRequest(NxModel):
 class IngestUrlRequest(NxModel):
     url: str
     """
-    A URL (typically signed) Nx fetches once.
+    A URL (typically signed) ctx fetches once.
     """
     metadata: dict[str, str] | None = None
     """
@@ -585,7 +742,19 @@ class Oauth(NxModel):
 
 McpToolName = TypeAliasType(
     "McpToolName",
-    Annotated[Literal["search_records", "get_record", "list_sources", "summarize_records", "ingest_document"], Open],
+    Annotated[
+        Literal[
+            "search_records",
+            "find_in_document",
+            "get_record",
+            "list_sources",
+            "summarize_records",
+            "ingest_document",
+            "create_api_token",
+            "get_api_docs",
+        ],
+        Open,
+    ],
 )
 
 
@@ -1033,7 +1202,7 @@ class Rate(NxModel):
     unit_size: Annotated[int, Field(examples=[1000])]
     price_usd: Annotated[float, Field(examples=[1.2])]
     """
-    The price in force: the organization's own price where NVISIONx agreed one, else the list price.
+    The price in force: the organization's own price where ctx agreed one, else the list price.
     """
 
 
@@ -1049,6 +1218,18 @@ class RegexOptions(NxModel):
     fields: Annotated[list[Annotated[Literal["text", "filename", "path"], Open]] | None, Field(min_length=1)] = ["text"]
     """
     `text`: the passage text · `filename`: the document's file name · `path`: its path in the source.
+    """
+    passages_per_document: Annotated[int | None, Field(ge=1, le=20)] = 1
+    """
+    `search` only (a 400 elsewhere): the most matching passages each result carries in `passages`, most matches first. Whatever it is, `document_match_count` and `document_passage_count` count all of the document's matches. For every match of one document, with the text around each, use `findDocumentMatches`.
+    """
+    patterns: Annotated[list[Pattern] | None, Field(max_length=10, min_length=1)] = None
+    """
+    `search` only (a 400 elsewhere), instead of `query`: several RE2 patterns searched together. Each is matched and counted on its own (different patterns' matches may overlap, and all are counted); a passage matches when any pattern does, and `match_count` and the document counts are sums over the patterns, with `pattern_counts` and `document_pattern_counts` giving each pattern's share. Results rank by the sum. A bad pattern is a 400 on `regex.patterns` naming its index.
+    """
+    require: Annotated[Literal["any", "all"], Open] | None = None
+    """
+    Only with `patterns`; `any` when left out. `any`: documents where any pattern matches · `all`: only documents where every pattern matches, in any of their passages (not necessarily the same one). `total` counts the documents that qualify.
     """
 
 
@@ -1070,16 +1251,20 @@ Scope = TypeAliasType(
             "sources:write",
             "billing:read",
             "billing:write",
+            "tokens:issue",
         ],
         Open,
     ],
 )
+"""
+`tokens:issue` lets an MCP client mint short-lived API tokens (`create_api_token`). It can be granted at OAuth consent or on an API token created in the console, and is never carried by an issued token.
+"""
 
 
 class SearchCompareError(NxModel):
     code: Annotated[Literal["timeout", "unavailable", "failed"], Open]
     """
-    `timeout`: the engine did not answer in time · `unavailable`: the engine cannot answer for this workspace right now (the next-generation engine is not available for it, or the current engine is still starting up) · `failed`: anything else.
+    `timeout`: the engine did not answer in time · `unavailable`: the engine cannot answer for this workspace (the next-generation engine is not available for it, the current engine is still starting up, or, for `baseline`, the workspace now uses only the next-generation engine) · `failed`: anything else.
     """
     message: str
 
@@ -1116,6 +1301,10 @@ class SnippetRange(NxModel):
     end: Annotated[int, Field(ge=0)]
     """
     Exclusive.
+    """
+    pattern: Annotated[int | None, Field(ge=0)] = None
+    """
+    With `regex.patterns`: the index of the pattern that matched here.
     """
 
 
@@ -1393,6 +1582,10 @@ class Document(NxModel):
     ingest_error: Annotated[str | None, Field(examples=["The file is larger than 2 GB."])] = None
     """
     Why the document could not be ingested, in words for the person who sent it: set when `ingest_status` is `failed`, else `null`.
+    """
+    failure_stage: DocumentFailureStage | None
+    """
+    Which stage failed when `ingest_status` is `failed`, else `null`.
     """
     parsed_at: AwareDatetime | None
     chunk_count: int | None
@@ -1799,10 +1992,37 @@ class SearchCompareRequest(NxModel):
     """
 
 
-class SearchRequest(NxModel):
-    query: Annotated[str, Field(min_length=1)]
+class SearchPassage(NxModel):
     """
-    Natural-language or keyword query. In `regex` mode, an RE2 regular expression of at most 1,000 characters (no backreferences or lookaround).
+    One matching passage of a document.
+    """
+
+    ordinal: Annotated[int, Field(ge=0)]
+    """
+    The passage's position in the document (0 is its first).
+    """
+    snippet: str
+    """
+    The passage, cut around its first match.
+    """
+    match_count: int
+    """
+    How many times the pattern matched in this passage, over the searched fields (with `regex.patterns`, all of them).
+    """
+    pattern_counts: list[int] | None = None
+    """
+    With `regex.patterns`: `match_count` per pattern, in the order of `patterns`.
+    """
+    highlights: list[SnippetRange]
+    """
+    The parts of `snippet` that matched, as character offsets (Unicode code points).
+    """
+
+
+class SearchRequest(NxModel):
+    query: Annotated[str | None, Field(min_length=1)] = None
+    """
+    Natural-language or keyword query, required outside `regex` mode. In `regex` mode, an RE2 regular expression of at most 1,000 characters (no backreferences or lookaround); send it or `regex.patterns`, not both.
     """
     sources: list[str] | None = None
     """
@@ -1813,9 +2033,13 @@ class SearchRequest(NxModel):
     `hybrid`: keyword and semantic results fused, then reranked · `semantic`: by meaning only (vector similarity) · `keyword`: by terms only (BM25) · `regex`: documents with a passage matching `query` as a regular expression, one result each (its passage with the most matches), most matches first. Every mode pages (`cursor`) and keeps to the sources and permissions of the token.
     """
     regex: RegexOptions | None = None
+    dense_mode: Annotated[Literal["auto", "full", "fast"], Open] | None = "auto"
+    """
+    How the semantic part of a search reads the vectors (`semantic` mode, and the semantic half of `hybrid`; `keyword` and `regex` ignore it) · `full`: every vector, exact · `fast`: an approximate index (IVF lists and RaBitQ codes) that reads a small share of the vectors and may miss a few close results · `auto`: `full` for smaller workspaces, `fast` for large ones. A `full` search of a very large workspace takes longer, and one that runs out of time answers from the part of the workspace it reached.
+    """
     cursor: str | None = None
     """
-    The `next_cursor` of the previous page, in any mode. Send the same `query`, `mode`, `regex`, `sources`, `filters` and `limit` as that page; a cursor from another search is a 400 on `cursor`. Each page runs the search again, so documents changed since the previous page may move.
+    The `next_cursor` of the previous page, in any mode. Send the same `query`, `mode`, `regex`, `dense_mode`, `sources`, `filters` and `limit` as that page; a cursor from another search is a 400 on `cursor`. Each page runs the search again, so documents changed since the previous page may move.
     """
     filters: Filters | None = None
     limit: Annotated[int | None, Field(ge=1, le=100)] = 10
@@ -1845,6 +2069,30 @@ class SearchResult(NxModel):
     highlights: list[SnippetRange] | None = None
     """
     Regex mode: the parts of `snippet` that matched, as character offsets (Unicode code points). Empty in the other modes.
+    """
+    document_match_count: int | None = None
+    """
+    Regex mode: how many times the pattern matched in the whole document, over every passage and the searched fields.
+    """
+    document_passage_count: int | None = None
+    """
+    Regex mode: how many of the document's passages matched.
+    """
+    counts_are_lower_bound: bool | None = None
+    """
+    Regex mode: true when the engine stopped counting early (as `total_is_lower_bound`), so the document may have more matches than `document_match_count`.
+    """
+    pattern_counts: list[int] | None = None
+    """
+    With `regex.patterns`: `match_count` per pattern, in the order of `patterns`.
+    """
+    document_pattern_counts: list[int] | None = None
+    """
+    With `regex.patterns`: `document_match_count` per pattern, in the order of `patterns`. With `require: all`, none is 0.
+    """
+    passages: list[SearchPassage] | None = None
+    """
+    Regex mode: the document's matching passages, most matches first, at most `regex.passages_per_document`. The first is the best passage, the one `snippet` shows.
     """
 
 

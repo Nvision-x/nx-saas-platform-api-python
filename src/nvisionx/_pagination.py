@@ -7,9 +7,12 @@ T = TypeVar("T")
 
 
 class SyncPage(Generic[T]):
-    def __init__(self, data: list[T], next_cursor: str | None, fetch: Callable[[str], SyncPage[T]]) -> None:
+    def __init__(
+        self, data: list[T], next_cursor: str | None, fetch: Callable[[str], SyncPage[T]], body: Any = None
+    ) -> None:
         self.data = data
         self.next_cursor = next_cursor
+        self.body = body
         self._fetch = fetch
 
     def has_next_page(self) -> bool:
@@ -33,9 +36,16 @@ class SyncPage(Generic[T]):
 
 
 class AsyncPage(Generic[T]):
-    def __init__(self, data: list[T], next_cursor: str | None, fetch: Callable[[str], Awaitable[AsyncPage[T]]]) -> None:
+    def __init__(
+        self,
+        data: list[T],
+        next_cursor: str | None,
+        fetch: Callable[[str], Awaitable[AsyncPage[T]]],
+        body: Any = None,
+    ) -> None:
         self.data = data
         self.next_cursor = next_cursor
+        self.body = body
         self._fetch = fetch
 
     def has_next_page(self) -> bool:

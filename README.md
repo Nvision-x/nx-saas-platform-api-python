@@ -8,7 +8,7 @@ estate into **business records** (record type, owner, sensitivity, retention), m
 to agents.
 
 This library covers the data plane, which is everything an API token can call: ingest, documents, jobs, search,
-hosted agents, chat, data sources, MCP settings, usage and budgets. It ships typed models, sync and async clients, automatic retries,
+hosted agents, chat, data sources, MCP settings, models, usage and budgets. It ships typed models, sync and async clients, automatic retries,
 cursor pagination and streaming chat.
 
 ## Install
@@ -21,14 +21,7 @@ Python 3.10 or newer.
 
 ## Quickstart
 
-Create an API token in the Nx console under **API tokens**. A token reaches the workspaces chosen when it was created.
-A token that reaches one workspace acts on it. A token that reaches several needs the workspace for each call: pass
-`workspace=` (or set `NX_WORKSPACE`), and use `with_options(workspace=…)` to switch:
-
-```python
-nx = Nx(workspace="ws_legal")
-finance = nx.with_options(workspace="ws_finance")  # shares the connection pool
-```
+Create an API token in the Nx console under **API tokens**, then:
 
 ```sh
 export NX_API_KEY="nx_live_…"
@@ -47,6 +40,43 @@ results = nx.search("indemnification cap in vendor contracts", limit=5)
 for result in results.results:
     print(result.title, result.record_type, result.score)
 ```
+
+## Authentication
+
+Every call sends the token as `Authorization: Bearer …`. Pass it as `api_key=` or set `NX_API_KEY`; set `NX_BASE_URL`
+(or `base_url=`) for an API origin other than the default.
+
+### Workspaces
+
+A token reaches the workspaces chosen when it was created. A token that reaches one workspace acts on it. A token that
+reaches several needs the workspace for each call: pass `workspace=` (or set `NX_WORKSPACE`), and use
+`with_options(workspace=…)` to switch. The option sends the `Nx-Workspace` header, so setting the header yourself with
+`default_headers` works too.
+
+```python
+nx = Nx(workspace="ws_legal")
+finance = nx.with_options(workspace="ws_finance")  # shares the connection pool
+
+nx.with_options(default_headers={"Nx-Workspace": "ws_finance"})  # the same thing
+```
+
+### Short-lived tokens from MCP
+
+An agent connected to the Nx MCP server can mint a token for code it writes: the `create_api_token` tool, when the
+connection allows it, returns a token for one workspace that expires after 15 minutes by default (60 at most), holds
+only the scopes and data sources asked for, and comes with a ready snippet:
+
+```python
+from nvisionx import Nx
+
+nx = Nx(
+    api_key="nx_live_…",
+    base_url="https://platform.us.nvisionx.ai",
+)
+```
+
+Such a token reaches exactly one workspace, so it needs no `workspace=`. When it expires, calls raise
+`AuthenticationError`; ask for a new one.
 
 ## Configuration
 
@@ -97,7 +127,7 @@ if job.status == "completed":
 ```
 
 `jobs.wait` returns the job once it is `completed` or `failed`, and raises `JobTimeoutError` if it is neither by the
-timeout.
+timeout. `jobs.summary()` reports jobs by status, the documents still in the pipeline and the last 24 hours of ingest.
 
 ## Documents
 
@@ -112,7 +142,51 @@ print(parsed.parser, parsed.page_count, parsed.text[:200])
 print(nx.documents.summary())
 ```
 
-`documents.parsed` raises `NotFoundError` until the document has been parsed.
+`documents.parsed` raises `NotFoundError` until the document has been parsed. It returns up to 1 MB of the Markdown;
+read on with `offset=parsed.next_offset`, or download the whole text with `documents.parsed_text`:
+
+```python
+parsed = nx.documents.parsed("doc_123")
+text = parsed.text
+while parsed.next_offset is not None:
+    parsed = nx.documents.parsed("doc_123", offset=parsed.next_offset)
+    text += parsed.text
+
+markdown = nx.documents.parsed_text("doc_123")
+```
+
+### Matches in a document
+
+`documents.matches` finds every match of one or more patterns in a document's parsed text, in document order, with
+the text around each. Send several patterns in one call; each match's `pattern` is its index in `patterns`. A search
+result's `id` is a document id here.
+
+```python
+for m in nx.documents.matches("doc_123", patterns=[r"SUBJ-\d{4}", r"CASE-\d{6}"], context_chars=80):
+    print(m.pattern, m.text, m.before, m.after, m.start)
+```
+
+`mode="literal"` matches exact text instead of RE2 regular expressions, and `case_sensitive=False` ignores case. A page
+can hold fewer than `limit` matches, or none, while more follow, so iterate the page (or call `next_page()`) rather
+than stopping at a short one. Each page is billed as a search. `byte_start` is the offset to pass to
+`documents.parsed` to read on from a match.
+
+### Chunks
+
+`documents.chunks` lists the passages a document was split into for search, in document order, with their place in
+the parsed text, pages, section and heading:
+
+```python
+chunks = nx.documents.chunks("doc_123", limit=200)
+print(chunks.body.total)
+for chunk in chunks:
+    print(chunk.ordinal, chunk.page_start, chunk.section, chunk.text[:80])
+```
+
+A search passage's `ordinal` is a chunk's `ordinal`. If the document is indexed again while you page, the next page
+raises `ConflictError`: start over.
+
+### Delete and re-parse
 
 Delete one document with `documents.delete`, or up to 200 at once by id. To delete by filter, run a dry run first,
 then send its count back as `expected_count`. If the matching documents change in between, nothing is deleted and the
@@ -123,6 +197,14 @@ nx.documents.delete_many(ids=["doc_1", "doc_2"])
 
 preview = nx.documents.delete_many(filter={"source_id": "src_123", "q": "draft"}, dry_run=True)
 nx.documents.delete_many(filter={"source_id": "src_123", "q": "draft"}, expected_count=preview.matched)
+```
+
+`documents.reparse` reads failed documents again from their stored originals, by id or by filter, with the same dry
+run and `expected_count` rules:
+
+```python
+preview = nx.documents.reparse(filter={"source_id": "src_123"}, dry_run=True)
+nx.documents.reparse(filter={"source_id": "src_123"}, expected_count=preview.matched)
 ```
 
 ## Search
@@ -138,7 +220,42 @@ response = nx.search(
 )
 ```
 
-`filters` also accepts a plain `dict`.
+`filters` also accepts a plain `dict`. `dense_mode` picks how the semantic part reads vectors: `full` (exact),
+`fast` (an approximate index, for large workspaces) or `auto` (the default).
+
+Every mode pages: pass the response's `next_cursor` back as `cursor`, with the same arguments, until it is `None`.
+Each page is billed as a search.
+
+```python
+response = nx.search("data retention", limit=50)
+while response.next_cursor:
+    response = nx.search("data retention", limit=50, cursor=response.next_cursor)
+```
+
+### Regex search
+
+`mode="regex"` finds documents with a passage matching an RE2 regular expression, one result per document, most matches
+first. `regex.patterns` searches several patterns together instead of `query`, and `require="all"` keeps only documents
+where every pattern matches. `passages_per_document` returns up to 20 matching passages per result.
+
+```python
+from nvisionx.types import RegexOptions
+
+response = nx.search(
+    mode="regex",
+    regex=RegexOptions(patterns=[r"SUBJ-\d{4}", r"PROT-[A-Z]{2}\d{3}"], require="all", passages_per_document=3),
+)
+for result in response.results:
+    print(result.title, result.document_match_count, result.document_pattern_counts)
+    for passage in result.passages or []:
+        for h in passage.highlights:
+            print(passage.ordinal, h.pattern, passage.snippet[h.start : h.end])
+```
+
+`match_count` and `pattern_counts` count the result's best passage; `document_match_count`,
+`document_passage_count` and `document_pattern_counts` count the whole document (`counts_are_lower_bound` when the
+engine stopped counting early). A highlight's `pattern` is the index of the pattern that matched there. To get every
+match in one document, use `documents.matches`.
 
 ## Chat
 
@@ -220,6 +337,15 @@ for node in nx.sources.nodes("src_123", q="contracts"):
 Connecting a new source is an OAuth consent flow: `sources.authorizations.create`, send the person to the returned
 URL, then `sources.authorizations.verify` with the callback parameters and `sources.create`.
 
+## Language models
+
+```python
+models = nx.models.list()
+for model in models.data:
+    print(model.id, model.allowed, model.input_price_per_1m_usd)
+print(models.preferred)
+```
+
 ## Usage and budgets
 
 ```python
@@ -242,6 +368,9 @@ print(page.data, page.next_cursor)
 if page.has_next_page():
     page = page.next_page()
 ```
+
+`page.body` is the whole response of that page, for fields beside the items, such as `total` on
+`documents.chunks` or `cost_usd` on `documents.matches`.
 
 ## Async
 
